@@ -1,3 +1,4 @@
+import base64
 import importlib.util
 import json
 from pathlib import Path
@@ -46,11 +47,36 @@ class ThemeTests(unittest.TestCase):
         self.assertTrue(AYUTHEME.errors(theme(colours={})))
         self.assertTrue(AYUTHEME.errors(theme(icons={"size": 1})))
 
+    def test_shapes_take_known_values_only(self):
+        self.assertEqual(AYUTHEME.errors(theme(shapes={"corners": "stock", "panels": "stock", "tabBar": "stock"})), [])
+        self.assertTrue(AYUTHEME.errors(theme(shapes={"corners": "round"})))
+        self.assertTrue(AYUTHEME.errors(theme(shapes={"tabBar": 1})))
+
     def test_oversized_files_are_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "big.ayutheme"
-            path.write_text(json.dumps(theme(description="x" * 70000)))
+            path.write_text(json.dumps(theme(description="x" * (9 * 1024 * 1024))))
             self.assertTrue(AYUTHEME.check_file(path))
+
+    def test_a_font_can_be_embedded_and_chosen(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "t.ayutheme"
+            font = Path(directory) / "f.ttf"
+            font.write_bytes(b"\x00\x01\x00\x00" + b"x" * 100)
+            path.write_text(json.dumps(theme(fonts={"title": "myfont"})))
+            self.assertTrue(AYUTHEME.check_file(path))
+            AYUTHEME.add_font(path, font, "myfont")
+            self.assertEqual(AYUTHEME.check_file(path), [])
+
+    def test_bad_fonts_are_rejected(self):
+        good = base64.b64encode(b"OTTO" + b"x" * 100).decode()
+        self.assertEqual(AYUTHEME.errors(theme(customFonts=[{"id": "a", "file": good}])), [])
+        self.assertTrue(AYUTHEME.errors(theme(customFonts=[{"id": "a", "file": base64.b64encode(b"<html>").decode()}])))
+        self.assertTrue(AYUTHEME.errors(theme(customFonts=[{"id": "a", "file": "not base64!"}])))
+        self.assertTrue(AYUTHEME.errors(theme(customFonts=[{"id": "golos", "file": good}])))
+        self.assertTrue(AYUTHEME.errors(theme(customFonts=[{"id": "a", "file": good}, {"id": "a", "file": good}])))
+        self.assertTrue(AYUTHEME.errors(theme(customFonts=[{"id": str(index), "file": good} for index in range(4)])))
+        self.assertTrue(AYUTHEME.errors(theme(customFonts=[{"id": "a", "file": base64.b64encode(b"OTTO" + b"x" * (4 * 1024 * 1024)).decode()}])))
 
 
 if __name__ == "__main__":

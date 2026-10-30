@@ -1,0 +1,15 @@
+{
+  "format": "ayu-theme-1",
+  "id": "glass_mono",
+  "name": "Glass Mono",
+  "author": "AyuGram",
+  "version": "1.0",
+  "description": "Обычные формы и стекло Telegram, но чёрно-белые цвета и шрифт Golos.",
+  "shapes": { "corners": "stock", "panels": "stock", "tabBar": "stock" },
+  "fonts": { "title": "golos", "label": "golos" },
+  "icons": { "grid": 0 },
+  "avatars": { "mosaic": 0, "gray": true },
+  "media": { "gray": true, "grid": 0, "pickers": true },
+  "animation": { "stepsPerSecond": 0 },
+  "chat": { "dots": false }
+}

@@ -1,0 +1,10 @@
+{
+  "format": "ayu-theme-1",
+  "id": "full_pixel",
+  "name": "Full Pixel",
+  "author": "AyuGram",
+  "version": "1.0",
+  "description": "Как на макете: всё чёрно-белое, включая фото, видео и обои. Открытое на весь экран фото остаётся цветным.",
+  "photos": { "gray": true, "grid": 2 },
+  "chat": { "wallpaperGray": true }
+}

@@ -1,38 +1,82 @@
 #!/usr/bin/env python3
 """Create and check .ayutheme files. The rules match AyuTheme.validate() in the app."""
 import argparse
+import base64
+import binascii
 import json
 from pathlib import Path
 import re
 import sys
 
 FORMAT = "ayu-theme-1"
-MAXIMUM_FILE_BYTES = 64 * 1024
-FONTS = ("golos", "handjet", "plex", "system")
+MAXIMUM_FILE_BYTES = 8 * 1024 * 1024
+MAXIMUM_FONT_BYTES = 4 * 1024 * 1024
+MAXIMUM_FONT_COUNT = 3
+BUILT_IN_FONTS = ("golos", "handjet", "plex", "system")
+FONT_MAGIC = (b"\x00\x01\x00\x00", b"OTTO", b"true")
+ID_PATTERN = r"[a-z0-9_-]{1,64}"
 SECTIONS = {
     "palette": {"dark": str, "light": str},
+    "shapes": {"corners": str, "panels": str, "tabBar": str},
     "fonts": {"body": str, "title": str, "label": str},
     "icons": {"grid": int},
     "avatars": {"mosaic": int, "gray": bool},
-    "media": {"gray": bool, "grid": int},
+    "media": {"gray": bool, "grid": int, "pickers": bool},
+    "photos": {"gray": bool, "grid": int},
     "animation": {"stepsPerSecond": int},
-    "chat": {"dots": bool, "bubbleCorner": int},
+    "chat": {"dots": bool, "bubbleCorner": int, "wallpaperGray": bool},
 }
 DEFAULTS = {
     "palette": {"dark": "#000000", "light": "#FFFFFF"},
+    "shapes": {"corners": "square", "panels": "flat", "tabBar": "flat"},
     "fonts": {"body": "golos", "title": "handjet", "label": "plex"},
     "icons": {"grid": 1},
     "avatars": {"mosaic": 24, "gray": True},
-    "media": {"gray": True, "grid": 1},
+    "media": {"gray": True, "grid": 1, "pickers": True},
+    "photos": {"gray": False, "grid": 0},
     "animation": {"stepsPerSecond": 20},
-    "chat": {"dots": True, "bubbleCorner": 6},
+    "chat": {"dots": True, "bubbleCorner": 6, "wallpaperGray": False},
 }
+CHOICES = {("shapes", "corners"): ("square", "stock"), ("shapes", "panels"): ("flat", "stock"), ("shapes", "tabBar"): ("flat", "stock")}
+RANGES = {("icons", "grid"): (0, 4), ("media", "grid"): (0, 8), ("photos", "grid"): (0, 8), ("chat", "bubbleCorner"): (2, 16)}
 
 
 def luma(value):
     number = int(value[1:], 16)
     red, green, blue = (number >> 16) & 0xff, (number >> 8) & 0xff, number & 0xff
     return (red * 0.2126 + green * 0.7152 + blue * 0.0722) / 255.0
+
+
+def font_errors(theme):
+    fonts = theme.get("customFonts", [])
+    if not isinstance(fonts, list):
+        return ["customFonts must be a list"], []
+    found, identifiers = [], []
+    if len(fonts) > MAXIMUM_FONT_COUNT:
+        found.append(f"customFonts can hold at most {MAXIMUM_FONT_COUNT} fonts")
+    for font in fonts:
+        if not isinstance(font, dict):
+            found.append("each custom font must be an object")
+            continue
+        identifier = font.get("id")
+        if not isinstance(identifier, str) or not re.fullmatch(ID_PATTERN, identifier) or identifier in BUILT_IN_FONTS:
+            found.append(f"custom font id {identifier!r} is not valid")
+        elif identifier in identifiers:
+            found.append(f"custom font id {identifier} is used twice")
+        else:
+            identifiers.append(identifier)
+        try:
+            data = base64.b64decode(font.get("file") or "", validate=True)
+        except (binascii.Error, TypeError, ValueError):
+            found.append(f"custom font {identifier}: file is not base64")
+            continue
+        if not data:
+            found.append(f"custom font {identifier}: file is missing")
+        elif len(data) > MAXIMUM_FONT_BYTES:
+            found.append(f"custom font {identifier}: larger than {MAXIMUM_FONT_BYTES} bytes")
+        elif data[:4] not in FONT_MAGIC:
+            found.append(f"custom font {identifier}: not a TrueType or OpenType font")
+    return found, identifiers
 
 
 def errors(theme):
@@ -43,7 +87,7 @@ def errors(theme):
     if theme.get("format") != FORMAT:
         found.append(f"format must be {FORMAT}")
     identifier = theme.get("id")
-    if not isinstance(identifier, str) or not re.fullmatch(r"[a-z0-9_-]{1,64}", identifier):
+    if not isinstance(identifier, str) or not re.fullmatch(ID_PATTERN, identifier):
         found.append("id must be 1-64 characters: a-z, 0-9, _ or -")
     elif identifier == "pixel":
         found.append("id pixel belongs to the built-in theme")
@@ -55,7 +99,7 @@ def errors(theme):
     if not isinstance(description, str) or len(description) > 512:
         found.append("description must be at most 512 characters")
     for key in theme:
-        if key not in SECTIONS and key not in ("format", "id", "name", "author", "version", "description"):
+        if key not in SECTIONS and key not in ("format", "id", "name", "author", "version", "description", "customFonts"):
             found.append(f"unknown key {key}")
     merged = {}
     for section, fields in SECTIONS.items():
@@ -75,19 +119,21 @@ def errors(theme):
             found.append(f"palette.{key} must look like #RRGGBB")
     if not any("palette" in item for item in found) and luma(merged["palette"]["light"]) - luma(merged["palette"]["dark"]) < 0.4:
         found.append("palette.light must be clearly brighter than palette.dark: text would be unreadable")
+    problems, custom = font_errors(theme)
+    found.extend(problems)
     for key in ("body", "title", "label"):
-        if merged["fonts"][key] not in FONTS:
-            found.append(f"fonts.{key} must be one of {', '.join(FONTS)}")
-    if not 0 <= merged["icons"]["grid"] <= 4:
-        found.append("icons.grid must be 0-4")
+        if merged["fonts"][key] not in BUILT_IN_FONTS and merged["fonts"][key] not in custom:
+            found.append(f"fonts.{key} must be one of {', '.join(BUILT_IN_FONTS + tuple(custom))}")
+    for (section, key), choices in CHOICES.items():
+        if merged[section][key] not in choices:
+            found.append(f"{section}.{key} must be one of {', '.join(choices)}")
+    for (section, key), (low, high) in RANGES.items():
+        if not low <= merged[section][key] <= high:
+            found.append(f"{section}.{key} must be {low}-{high}")
     if merged["avatars"]["mosaic"] != 0 and not 8 <= merged["avatars"]["mosaic"] <= 64:
         found.append("avatars.mosaic must be 0 or 8-64")
-    if not 0 <= merged["media"]["grid"] <= 8:
-        found.append("media.grid must be 0-8")
     if merged["animation"]["stepsPerSecond"] != 0 and not 5 <= merged["animation"]["stepsPerSecond"] <= 60:
         found.append("animation.stepsPerSecond must be 0 or 5-60")
-    if not 2 <= merged["chat"]["bubbleCorner"] <= 16:
-        found.append("chat.bubbleCorner must be 2-16")
     return found
 
 
@@ -102,6 +148,23 @@ def check_file(path):
     return errors(theme)
 
 
+def write_theme(path, theme):
+    path.write_text(json.dumps(theme, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def add_font(theme_path, font_path, identifier):
+    """Embeds a font in a theme, replacing a font with the same id. Check the font's license first."""
+    theme = json.loads(theme_path.read_text(encoding="utf-8"))
+    data = font_path.read_bytes()
+    fonts = [font for font in theme.get("customFonts", []) if font.get("id") != identifier]
+    fonts.append({"id": identifier, "file": base64.b64encode(data).decode("ascii")})
+    theme["customFonts"] = fonts
+    problems = errors(theme)
+    if problems:
+        raise SystemExit("\n".join(problems))
+    write_theme(theme_path, theme)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -112,6 +175,10 @@ def main():
     new.add_argument("--id", required=True)
     new.add_argument("--name", required=True)
     new.add_argument("--author", required=True)
+    font = commands.add_parser("add-font", help="embed a .ttf or .otf font in a theme")
+    font.add_argument("theme", type=Path)
+    font.add_argument("font", type=Path)
+    font.add_argument("--id", required=True, help="the name to use in fonts.body, fonts.title or fonts.label")
     arguments = parser.parse_args()
 
     if arguments.command == "new":
@@ -121,8 +188,13 @@ def main():
         problems = errors(theme)
         if problems:
             raise SystemExit("\n".join(problems))
-        arguments.file.write_text(json.dumps(theme, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        write_theme(arguments.file, theme)
         print(f"Wrote {arguments.file}")
+        return
+
+    if arguments.command == "add-font":
+        add_font(arguments.theme, arguments.font, arguments.id)
+        print(f"Added {arguments.font.name} to {arguments.theme} as {arguments.id}")
         return
 
     failed = False

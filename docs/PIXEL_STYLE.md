@@ -30,7 +30,7 @@ Three patches apply last, in this order: `patches/ayugram-pixel-style.patch`, `p
 
 - `CallStatusBarWavesLayer` still draws its Metal waves in the call status bar.
 - The settings profile keeps its stock layout. The chat list title stays 34 pt, not the 64 pt of the mockup, because the navigation bar keeps its height.
-- Photos, videos, the sticker and emoji pickers, and `AnimationNode` animations keep their colors.
+- Photos, videos and wallpapers keep their colors in the default theme. A theme can make them gray: see [THEMES.md](THEMES.md). `AnimationNode` animations keep their colors.
 - Shapes drawn directly with `fillEllipse`, `addArc` or `CGPath` stay round.
 - Code that calls `UIFont.systemFont` directly keeps the system font.
 - `UIColor(red:green:blue:alpha:)`, `UIColor(white:alpha:)` and system colors keep their own colors.
@@ -61,7 +61,8 @@ All three patches compile as `debug_arm64`. None of these checks has been done o
 14. Stickers and custom emoji stay gray and pixelated while they play, and scrolling a chat full of them stays smooth.
 15. Liquid Glass: on iOS 26 and later, folder tabs, the attachment panel, the emoji panel, camera modes and context menus show no glass, lens or morph. Menus open and close from every source, and a press on any panel springs back to its place.
 16. Voice recording: the blob reacts to the microphone, moves when locked, and the mic button works as before.
-17. The chat list title does not cover the left button, the proxy or lock icons, or the story avatars.
+17. Themes: every example in `themes/` installs from a chat and from Files and applies after a restart. **Standard look** brings back the regular app. Scrolling the sticker and emoji panels stays smooth.
+18. The chat list title does not cover the left button, the proxy or lock icons, or the story avatars.
 
 ## Fonts
 
