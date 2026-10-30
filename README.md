@@ -72,7 +72,7 @@ Opt-in scheduled sending and read-after-send, Telegram/LibreTranslate/DeepL tran
 
 ## Pixel style (development source)
 
-Stage 1 of a black-and-white pixel look: grayscale colors, Golos Text and Handjet fonts, stepped bubble corners without tails. It is on for the whole app and has no setting yet. It has not been compiled. See [scope and device checks](docs/PIXEL_STYLE.md).
+A black-and-white pixel look: grayscale colors, square corners, flat panels, pixel icons, mosaic avatars, Golos Text, Handjet and IBM Plex Mono fonts. It is on for the whole app and has no setting yet. The latest block has not been compiled. See [scope and device checks](docs/PIXEL_STYLE.md).
 
 ## Cloud builds from Windows
 

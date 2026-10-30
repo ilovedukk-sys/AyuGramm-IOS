@@ -1,0 +1,930 @@
+diff --git a/Telegram/BUILD b/Telegram/BUILD
+index 9f0c3e1..c714d3d 100644
+--- a/Telegram/BUILD
++++ b/Telegram/BUILD
+@@ -1796,6 +1796,8 @@ plist_fragment(
+         <string>YSMusic-HeadlineBold.ttf</string>
+         <string>GolosText-Variable.ttf</string>
+         <string>Handjet-Variable.ttf</string>
++        <string>IBMPlexMono-Regular.ttf</string>
++        <string>IBMPlexMono-Medium.ttf</string>
+     </array>
+     <key>UIApplicationSceneManifest</key>
+     <dict>
+diff --git a/submodules/AppBundle/BUILD b/submodules/AppBundle/BUILD
+index a974f13..19c4ce3 100644
+--- a/submodules/AppBundle/BUILD
++++ b/submodules/AppBundle/BUILD
+@@ -18,6 +18,8 @@ objc_library(
+     sdk_frameworks = [
+         "Foundation",
+         "UIKit",
++        "QuartzCore",
++        "CoreGraphics",
+     ],
+     visibility = [
+         "//visibility:public",
+diff --git a/submodules/AppBundle/Sources/AppBundle/AppBundle.m b/submodules/AppBundle/Sources/AppBundle/AppBundle.m
+index e93a19a..939ddc1 100644
+--- a/submodules/AppBundle/Sources/AppBundle/AppBundle.m
++++ b/submodules/AppBundle/Sources/AppBundle/AppBundle.m
+@@ -1,5 +1,137 @@
+ #import <AppBundle/AppBundle.h>
+ 
++#import <QuartzCore/QuartzCore.h>
++#import <objc/runtime.h>
++
++// Keep in sync with AyuPixelStyle.isEnabled in Display.
++static const BOOL AyuPixelStyleEnabled = YES;
++
++static void AyuExchangeMethods(Method original, Method replacement) {
++    if (original != NULL && replacement != NULL) {
++        method_exchangeImplementations(original, replacement);
++    }
++}
++
++@interface CALayer (AyuPixelStyle)
++@end
++
++@implementation CALayer (AyuPixelStyle)
++
+++ (void)load {
++    if (!AyuPixelStyleEnabled) {
++        return;
++    }
++    AyuExchangeMethods(class_getInstanceMethod(self, @selector(setCornerRadius:)), class_getInstanceMethod(self, @selector(ayu_setCornerRadius:)));
++    AyuExchangeMethods(class_getInstanceMethod(self, @selector(addAnimation:forKey:)), class_getInstanceMethod(self, @selector(ayu_addAnimation:forKey:)));
++}
++
++- (void)ayu_setCornerRadius:(CGFloat)__unused cornerRadius {
++    [self ayu_setCornerRadius:0.0];
++}
++
++- (void)ayu_addAnimation:(CAAnimation *)animation forKey:(NSString *)key {
++    if ([animation isKindOfClass:[CABasicAnimation class]] && [((CABasicAnimation *)animation).keyPath isEqualToString:@"cornerRadius"]) {
++        CABasicAnimation *basicAnimation = (CABasicAnimation *)animation;
++        basicAnimation.fromValue = @(0.0);
++        basicAnimation.toValue = @(0.0);
++        basicAnimation.byValue = nil;
++    }
++    [self ayu_addAnimation:animation forKey:key];
++}
++
++@end
++
++@interface UIBezierPath (AyuPixelStyle)
++@end
++
++@implementation UIBezierPath (AyuPixelStyle)
++
+++ (void)load {
++    if (!AyuPixelStyleEnabled) {
++        return;
++    }
++    AyuExchangeMethods(class_getClassMethod(self, @selector(bezierPathWithRoundedRect:cornerRadius:)), class_getClassMethod(self, @selector(ayu_bezierPathWithRoundedRect:cornerRadius:)));
++    AyuExchangeMethods(class_getClassMethod(self, @selector(bezierPathWithRoundedRect:byRoundingCorners:cornerRadii:)), class_getClassMethod(self, @selector(ayu_bezierPathWithRoundedRect:byRoundingCorners:cornerRadii:)));
++}
++
+++ (instancetype)ayu_bezierPathWithRoundedRect:(CGRect)rect cornerRadius:(CGFloat)__unused cornerRadius {
++    return [self bezierPathWithRect:rect];
++}
++
+++ (instancetype)ayu_bezierPathWithRoundedRect:(CGRect)rect byRoundingCorners:(UIRectCorner)__unused corners cornerRadii:(CGSize)__unused cornerRadii {
++    return [self bezierPathWithRect:rect];
++}
++
++@end
++
++// Redraws a small icon on a one point grid: coverage under the threshold is dropped,
++// everything else becomes solid gray. Large and stretchable images stay as they are.
++static UIImage *AyuPixelatedImage(UIImage *image) {
++    if (image == nil || image.images != nil || !UIEdgeInsetsEqualToEdgeInsets(image.capInsets, UIEdgeInsetsZero)) {
++        return image;
++    }
++    CGSize size = image.size;
++    CGFloat maxSide = MAX(size.width, size.height);
++    CGImageRef source = image.CGImage;
++    if (maxSide < 1.0 || maxSide > 64.0 || source == NULL) {
++        return image;
++    }
++    size_t gridWidth = MAX((size_t)1, (size_t)round(size.width));
++    size_t gridHeight = MAX((size_t)1, (size_t)round(size.height));
++    size_t fullWidth = CGImageGetWidth(source);
++    size_t fullHeight = CGImageGetHeight(source);
++    CGBitmapInfo bitmapInfo = (CGBitmapInfo)kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big;
++    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
++
++    UIImage *result = image;
++    CGContextRef gridContext = CGBitmapContextCreate(NULL, gridWidth, gridHeight, 8, gridWidth * 4, colorSpace, bitmapInfo);
++    CGContextRef fullContext = CGBitmapContextCreate(NULL, fullWidth, fullHeight, 8, 0, colorSpace, bitmapInfo);
++    if (gridContext != NULL && fullContext != NULL) {
++        CGContextSetInterpolationQuality(gridContext, kCGInterpolationHigh);
++        CGContextDrawImage(gridContext, CGRectMake(0.0, 0.0, (CGFloat)gridWidth, (CGFloat)gridHeight), source);
++
++        uint8_t *pixels = (uint8_t *)CGBitmapContextGetData(gridContext);
++        for (size_t i = 0; i < gridWidth * gridHeight; i++) {
++            uint8_t *pixel = pixels + i * 4;
++            uint32_t alpha = pixel[3];
++            if (alpha < 89) {
++                pixel[0] = 0;
++                pixel[1] = 0;
++                pixel[2] = 0;
++                pixel[3] = 0;
++            } else {
++                uint32_t luma = (pixel[0] * 2126 + pixel[1] * 7152 + pixel[2] * 722) / 10000;
++                uint32_t value = MIN((uint32_t)255, luma * 255 / alpha);
++                pixel[0] = (uint8_t)value;
++                pixel[1] = (uint8_t)value;
++                pixel[2] = (uint8_t)value;
++                pixel[3] = 255;
++            }
++        }
++
++        CGImageRef gridImage = CGBitmapContextCreateImage(gridContext);
++        if (gridImage != NULL) {
++            CGContextSetInterpolationQuality(fullContext, kCGInterpolationNone);
++            CGContextSetShouldAntialias(fullContext, false);
++            CGContextDrawImage(fullContext, CGRectMake(0.0, 0.0, (CGFloat)fullWidth, (CGFloat)fullHeight), gridImage);
++            CGImageRef fullImage = CGBitmapContextCreateImage(fullContext);
++            if (fullImage != NULL) {
++                result = [[UIImage imageWithCGImage:fullImage scale:image.scale orientation:image.imageOrientation] imageWithRenderingMode:image.renderingMode];
++                CGImageRelease(fullImage);
++            }
++            CGImageRelease(gridImage);
++        }
++    }
++    if (gridContext != NULL) {
++        CGContextRelease(gridContext);
++    }
++    if (fullContext != NULL) {
++        CGContextRelease(fullContext);
++    }
++    CGColorSpaceRelease(colorSpace);
++    return result;
++}
++
+ NSBundle * _Nonnull getAppBundle() {
+     static NSBundle *appBundle = nil;
+     static dispatch_once_t onceToken;
+@@ -21,7 +153,21 @@ NSBundle * _Nonnull getAppBundle() {
+ @implementation UIImage (AppBundle)
+ 
+ - (instancetype _Nullable)initWithBundleImageName:(NSString * _Nonnull)bundleImageName {
+-    return [UIImage imageNamed:bundleImageName inBundle:getAppBundle() compatibleWithTraitCollection:nil];
++    UIImage *image = [UIImage imageNamed:bundleImageName inBundle:getAppBundle() compatibleWithTraitCollection:nil];
++    if (!AyuPixelStyleEnabled || image == nil) {
++        return image;
++    }
++    static NSCache<NSString *, UIImage *> *cache = nil;
++    static dispatch_once_t onceToken;
++    dispatch_once(&onceToken, ^{
++        cache = [[NSCache alloc] init];
++    });
++    UIImage *pixelated = [cache objectForKey:bundleImageName];
++    if (pixelated == nil) {
++        pixelated = AyuPixelatedImage(image);
++        [cache setObject:pixelated forKey:bundleImageName];
++    }
++    return pixelated;
+ }
+ 
+ @end
+diff --git a/submodules/AvatarNode/Sources/AvatarNode.swift b/submodules/AvatarNode/Sources/AvatarNode.swift
+index bedc41a..6643346 100644
+--- a/submodules/AvatarNode/Sources/AvatarNode.swift
++++ b/submodules/AvatarNode/Sources/AvatarNode.swift
+@@ -264,7 +264,7 @@ public final class AvatarEditOverlayNode: ASDisplayNode {
+         }
+         
+         context.beginPath()
+-        context.addEllipse(in: CGRect(x: 0.0, y: 0.0, width: bounds.size.width, height:
++        AyuPixelStyle.addEllipse(context, in: CGRect(x: 0.0, y: 0.0, width: bounds.size.width, height:
+             bounds.size.height))
+         context.clip()
+         
+@@ -974,7 +974,7 @@ public final class AvatarNode: ASDisplayNode {
+                 
+                 if case .round = parameters.clipStyle {
+                     context.beginPath()
+-                    context.addEllipse(in: CGRect(x: 0.0, y: 0.0, width: bounds.size.width, height:
++                    AyuPixelStyle.addEllipse(context, in: CGRect(x: 0.0, y: 0.0, width: bounds.size.width, height:
+                         bounds.size.height))
+                     context.clip()
+                 } else if case .roundedRect = parameters.clipStyle {
+diff --git a/submodules/AvatarNode/Sources/PeerAvatar.swift b/submodules/AvatarNode/Sources/PeerAvatar.swift
+index caf0642..64ccadd 100644
+--- a/submodules/AvatarNode/Sources/PeerAvatar.swift
++++ b/submodules/AvatarNode/Sources/PeerAvatar.swift
+@@ -16,7 +16,7 @@ private let roundCorners = { () -> UIImage in
+     context.setFillColor(UIColor.black.cgColor)
+     context.fill(CGRect(origin: CGPoint(), size: CGSize(width: diameter, height: diameter)))
+     context.setFillColor(UIColor.clear.cgColor)
+-    context.fillEllipse(in: CGRect(origin: CGPoint(), size: CGSize(width: diameter, height: diameter)))
++    AyuPixelStyle.fillEllipse(context, in: CGRect(origin: CGPoint(), size: CGSize(width: diameter, height: diameter)))
+     let image = UIGraphicsGetImageFromCurrentImageContext()!.stretchableImage(withLeftCapWidth: Int(diameter / 2.0), topCapHeight: Int(diameter / 2.0))
+     UIGraphicsEndImageContext()
+     return image
+@@ -191,7 +191,7 @@ public func peerAvatarImage(postbox: Postbox, peerReference: PeerReference?, aut
+                 if emptyColor == nil && data == nil {
+                     return .single(nil)
+                 }
+-                let roundedImage = generateImage(displayDimensions, contextGenerator: { size, context -> Void in
++                let rawRoundedImage = generateImage(displayDimensions, contextGenerator: { size, context -> Void in
+                     if let (data, dataType) = data {
+                         if let imageSource = CGImageSourceCreateWithData(data as CFData, nil), var dataImage = CGImageSourceCreateImageAtIndex(imageSource, 0, nil) {
+                             context.clear(CGRect(origin: CGPoint(), size: displayDimensions))
+@@ -202,7 +202,7 @@ public func peerAvatarImage(postbox: Postbox, peerReference: PeerReference?, aut
+                                 break
+                             case .round:
+                                 if displayDimensions.width != 60.0 {
+-                                    context.addEllipse(in: CGRect(origin: CGPoint(), size: displayDimensions).insetBy(dx: inset, dy: inset))
++                                    AyuPixelStyle.addEllipse(context, in: CGRect(origin: CGPoint(), size: displayDimensions).insetBy(dx: inset, dy: inset))
+                                     context.clip()
+                                 }
+                             case .roundedRect:
+@@ -280,7 +280,7 @@ public func peerAvatarImage(postbox: Postbox, peerReference: PeerReference?, aut
+                                 case .none:
+                                     context.fill(CGRect(origin: CGPoint(), size: displayDimensions).insetBy(dx: inset, dy: inset))
+                                 case .round:
+-                                    context.fillEllipse(in: CGRect(origin: CGPoint(), size: displayDimensions).insetBy(dx: inset, dy: inset))
++                                    AyuPixelStyle.fillEllipse(context, in: CGRect(origin: CGPoint(), size: displayDimensions).insetBy(dx: inset, dy: inset))
+                                 case .roundedRect:
+                                     context.beginPath()
+                                     context.addPath(UIBezierPath(roundedRect: CGRect(x: 0.0, y: 0.0, width: displayDimensions.width, height: displayDimensions.height).insetBy(dx: inset, dy: inset), cornerRadius: floor(displayDimensions.width * 0.25)).cgPath)
+@@ -306,7 +306,7 @@ public func peerAvatarImage(postbox: Postbox, peerReference: PeerReference?, aut
+                         case .none:
+                             context.fill(CGRect(origin: CGPoint(), size: displayDimensions).insetBy(dx: inset, dy: inset))
+                         case .round:
+-                            context.fillEllipse(in: CGRect(origin: CGPoint(), size: displayDimensions).insetBy(dx: inset, dy: inset))
++                            AyuPixelStyle.fillEllipse(context, in: CGRect(origin: CGPoint(), size: displayDimensions).insetBy(dx: inset, dy: inset))
+                         case .roundedRect:
+                             context.beginPath()
+                             context.addPath(UIBezierPath(roundedRect: CGRect(x: 0.0, y: 0.0, width: displayDimensions.width, height: displayDimensions.height).insetBy(dx: inset, dy: inset), cornerRadius: floor(displayDimensions.width * 0.25)).cgPath)
+@@ -328,9 +328,10 @@ public func peerAvatarImage(postbox: Postbox, peerReference: PeerReference?, aut
+                         context.setBlendMode(.copy)
+                         context.setFillColor(UIColor.clear.cgColor)
+                         //TODO:fix
+-                        context.fillEllipse(in: cutoutRect)
++                        AyuPixelStyle.fillEllipse(context, in: cutoutRect)
+                     }
+                 })
++                let roundedImage = rawRoundedImage.flatMap(AyuPixelStyle.avatarMosaic)
+                 let unroundedImage: UIImage?
+                 if provideUnrounded {
+                     unroundedImage = generateImage(displayDimensions, contextGenerator: { size, context -> Void in
+@@ -354,7 +355,7 @@ public func peerAvatarImage(postbox: Postbox, peerReference: PeerReference?, aut
+                             case .none:
+                                 context.fill(CGRect(origin: CGPoint(), size: displayDimensions).insetBy(dx: inset, dy: inset))
+                             case .round:
+-                                context.fillEllipse(in: CGRect(origin: CGPoint(), size: displayDimensions).insetBy(dx: inset, dy: inset))
++                                AyuPixelStyle.fillEllipse(context, in: CGRect(origin: CGPoint(), size: displayDimensions).insetBy(dx: inset, dy: inset))
+                             case .roundedRect:
+                                 context.beginPath()
+                                 context.addPath(UIBezierPath(roundedRect: CGRect(x: 0.0, y: 0.0, width: displayDimensions.width, height: displayDimensions.height).insetBy(dx: inset, dy: inset), cornerRadius: floor(displayDimensions.width * 0.25)).cgPath)
+@@ -395,7 +396,7 @@ public func peerAvatarImage(postbox: Postbox, peerReference: PeerReference?, aut
+ public func drawPeerAvatarLetters(context: CGContext, size: CGSize, round: Bool = true, font: UIFont, letters: [String], peerId: EnginePeer.Id, nameColor: PeerColor?) {
+     if round {
+         context.beginPath()
+-        context.addEllipse(in: CGRect(x: 0.0, y: 0.0, width: size.width, height:
++        AyuPixelStyle.addEllipse(context, in: CGRect(x: 0.0, y: 0.0, width: size.width, height:
+             size.height))
+         context.clip()
+     }
+@@ -478,7 +479,7 @@ public func generateAvatarImage(size: CGSize, icon: UIImage?, iconScale: CGFloat
+                 context.addPath(roundedRect.cgPath)
+             }
+         } else {
+-            context.addEllipse(in: CGRect(x: 0.0, y: 0.0, width: size.width, height: size.height))
++            AyuPixelStyle.addEllipse(context, in: CGRect(x: 0.0, y: 0.0, width: size.width, height: size.height))
+         }
+         context.clip()
+         
+diff --git a/submodules/ChatListUI/Sources/Node/ChatListItem.swift b/submodules/ChatListUI/Sources/Node/ChatListItem.swift
+index de8b2b3..f0760ec 100644
+--- a/submodules/ChatListUI/Sources/Node/ChatListItem.swift
++++ b/submodules/ChatListUI/Sources/Node/ChatListItem.swift
+@@ -2319,7 +2319,7 @@ public class ChatListItemNode: ItemListRevealOptionsItemNode {
+             let titleFont = Font.semibold(floor(item.presentationData.fontSize.itemListBaseFontSize * 16.0 / 17.0))
+             let textFont = Font.regular(floor(item.presentationData.fontSize.itemListBaseFontSize * 15.0 / 17.0))
+             let italicTextFont = Font.italic(floor(item.presentationData.fontSize.itemListBaseFontSize * 15.0 / 17.0))
+-            let dateFont = Font.regular(floor(item.presentationData.fontSize.itemListBaseFontSize * 14.0 / 17.0))
++            let dateFont = AyuPixelStyle.isEnabled ? Font.pixelLabel(floor(item.presentationData.fontSize.itemListBaseFontSize * 12.0 / 17.0)) : Font.regular(floor(item.presentationData.fontSize.itemListBaseFontSize * 14.0 / 17.0))
+             let badgeFont = Font.with(size: floor(item.presentationData.fontSize.itemListBaseFontSize * 12.0 / 17.0), design: .regular, weight: .semibold, traits: [.monospacedNumbers])
+             let avatarBadgeFont = Font.with(size: floor(item.presentationData.fontSize.itemListBaseFontSize * 16.0 / 17.0), design: .regular, weight: .regular, traits: [.monospacedNumbers])
+             
+diff --git a/submodules/Display/Source/AyuMaterialControls.swift b/submodules/Display/Source/AyuMaterialControls.swift
+index 9f1a357..32ae348 100644
+--- a/submodules/Display/Source/AyuMaterialControls.swift
++++ b/submodules/Display/Source/AyuMaterialControls.swift
+@@ -7,7 +7,7 @@ public enum AyuMaterialControls {
+     public static let defaultsKey = "ayu.materialControls"
+ 
+     /// Read once per launch, so a screen never shows the two styles side by side.
+-    public static let isEnabled: Bool = UserDefaults.standard.bool(forKey: AyuMaterialControls.defaultsKey)
++    public static let isEnabled: Bool = AyuPixelStyle.isEnabled || UserDefaults.standard.bool(forKey: AyuMaterialControls.defaultsKey)
+ 
+     public static func setEnabledOnNextLaunch(_ value: Bool) {
+         UserDefaults.standard.set(value, forKey: AyuMaterialControls.defaultsKey)
+diff --git a/submodules/Display/Source/AyuPixelStyle.swift b/submodules/Display/Source/AyuPixelStyle.swift
+index 4d01350..fec6db6 100644
+--- a/submodules/Display/Source/AyuPixelStyle.swift
++++ b/submodules/Display/Source/AyuPixelStyle.swift
+@@ -1,4 +1,5 @@
+ import Foundation
++import UIKit
+ 
+ // Monochrome pixel look. Every change of the style checks this one switch.
+ public enum AyuPixelStyle {
+@@ -17,4 +18,159 @@ public enum AyuPixelStyle {
+         let luma = (red * 2126 + green * 7152 + blue * 722 + 5000) / 10000
+         return (value & 0xff000000) | (luma << 16) | (luma << 8) | luma
+     }
++
++    public static func fillEllipse(_ context: CGContext, in rect: CGRect) {
++        if self.isEnabled {
++            context.fill(rect)
++        } else {
++            context.fillEllipse(in: rect)
++        }
++    }
++
++    public static func strokeEllipse(_ context: CGContext, in rect: CGRect) {
++        if self.isEnabled {
++            context.stroke(rect)
++        } else {
++            context.strokeEllipse(in: rect)
++        }
++    }
++
++    public static func addEllipse(_ context: CGContext, in rect: CGRect) {
++        if self.isEnabled {
++            context.addRect(rect)
++        } else {
++            context.addEllipse(in: rect)
++        }
++    }
++
++    // A gray mosaic of the image, used for avatars.
++    public static func avatarMosaic(_ image: UIImage) -> UIImage? {
++        guard self.isEnabled else {
++            return image
++        }
++        guard image.size.width >= 16.0, image.size.height >= 16.0, let cgImage = image.cgImage else {
++            return image
++        }
++        let cells = 24
++        let colorSpace = CGColorSpaceCreateDeviceGray()
++        guard let context = CGContext(data: nil, width: cells, height: cells, bitsPerComponent: 8, bytesPerRow: 0, space: colorSpace, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
++            return image
++        }
++        context.interpolationQuality = .high
++        context.draw(cgImage, in: CGRect(x: 0.0, y: 0.0, width: CGFloat(cells), height: CGFloat(cells)))
++        guard let mosaic = context.makeImage() else {
++            return image
++        }
++        let format = UIGraphicsImageRendererFormat()
++        format.scale = image.scale
++        format.opaque = false
++        return UIGraphicsImageRenderer(size: image.size, format: format).image { rendererContext in
++            rendererContext.cgContext.interpolationQuality = .none
++            UIImage(cgImage: mosaic).draw(in: CGRect(origin: CGPoint(), size: image.size))
++        }
++    }
++
++    // A flat panel with a one point border, stretchable, with a transparent margin of `inset`.
++    public static func panelImage(fillColor: UIColor, borderColor: UIColor, inset: CGFloat) -> UIImage {
++        let side = inset * 2.0 + 3.0
++        let image = UIGraphicsImageRenderer(size: CGSize(width: side, height: side)).image { rendererContext in
++            let rect = CGRect(x: inset, y: inset, width: 3.0, height: 3.0)
++            borderColor.setFill()
++            rendererContext.fill(rect)
++            fillColor.setFill()
++            rendererContext.fill(rect.insetBy(dx: 1.0, dy: 1.0))
++        }
++        let cap = inset + 1.0
++        return image.resizableImage(withCapInsets: UIEdgeInsets(top: cap, left: cap, bottom: cap, right: cap), resizingMode: .stretch)
++    }
++
++    // The dot grid drawn over the chat wallpaper.
++    public static let wallpaperDotsColor: UIColor = {
++        let image = UIGraphicsImageRenderer(size: CGSize(width: 8.0, height: 8.0)).image { rendererContext in
++            UIColor(white: 0.5, alpha: 0.28).setFill()
++            rendererContext.fill(CGRect(x: 0.0, y: 0.0, width: 1.0, height: 1.0))
++        }
++        return UIColor(patternImage: image)
++    }()
++
++    private static func bitmapIcon(_ rows: [String]) -> UIImage {
++        let cell: CGFloat = 2.0
++        let size = CGSize(width: CGFloat(rows.first?.count ?? 0) * cell, height: CGFloat(rows.count) * cell)
++        let image = UIGraphicsImageRenderer(size: size).image { rendererContext in
++            UIColor.black.setFill()
++            for (y, row) in rows.enumerated() {
++                for (x, character) in row.enumerated() where character == "#" {
++                    rendererContext.fill(CGRect(x: CGFloat(x) * cell, y: CGFloat(y) * cell, width: cell, height: cell))
++                }
++            }
++        }
++        return image.withRenderingMode(.alwaysTemplate)
++    }
++
++    private static let tabIcons: [String: UIImage] = [
++        "TabChats": bitmapIcon([
++            ".##########.",
++            "#..........#",
++            "#..........#",
++            "#.##.##.##.#",
++            "#.##.##.##.#",
++            "#..........#",
++            "#..........#",
++            ".#####.####.",
++            ".....#.#....",
++            ".....##.....",
++            ".....#......",
++            "............"
++        ]),
++        "TabContacts": bitmapIcon([
++            "....####....",
++            "...#....#...",
++            "...#....#...",
++            "...#....#...",
++            "...#....#...",
++            "....####....",
++            "............",
++            "..########..",
++            ".#........#.",
++            "#..........#",
++            "#..........#",
++            "############"
++        ]),
++        "TabCalls": bitmapIcon([
++            ".##.........",
++            "####........",
++            "####........",
++            ".##.........",
++            ".##.........",
++            "..##........",
++            "...##....##.",
++            "....###.####",
++            "......######",
++            ".......####.",
++            "............",
++            "............"
++        ]),
++        "TabSettings": bitmapIcon([
++            ".....##.....",
++            ".##..##..##.",
++            ".##########.",
++            "..##....##..",
++            "..#......#..",
++            "###..##..###",
++            "###..##..###",
++            "..#......#..",
++            "..##....##..",
++            ".##########.",
++            ".##..##..##.",
++            ".....##....."
++        ])
++    ]
++
++    // A bitmap icon replacing a tab bar animation, or nil when the animation stays.
++    public static func tabIcon(named name: String) -> UIImage? {
++        guard self.isEnabled else {
++            return nil
++        }
++        return self.tabIcons[name]
++    }
+ }
+diff --git a/submodules/Display/Source/Font.swift b/submodules/Display/Source/Font.swift
+index 6fbca74..47067c1 100644
+--- a/submodules/Display/Source/Font.swift
++++ b/submodules/Display/Source/Font.swift
+@@ -210,6 +210,14 @@ public struct Font {
+         }
+     }
+ 
++    // Labels, dates and counters.
++    public static func pixelLabel(_ size: CGFloat, medium: Bool = false) -> UIFont {
++        if AyuPixelStyle.isEnabled, let font = UIFont(name: medium ? "IBMPlexMono-Medium" : "IBMPlexMono-Regular", size: size) {
++            return font
++        }
++        return medium ? self.medium(size) : self.regular(size)
++    }
++
+     // Handjet has a small x-height, so titles get a larger point size.
+     public static func pixelTitle(_ size: CGFloat) -> UIFont {
+         return self.ayuPixelFont(name: "Handjet-Regular", size: floor(size * 1.4), weight: 500.0) ?? self.semibold(size)
+diff --git a/submodules/Display/Source/GenerateImage.swift b/submodules/Display/Source/GenerateImage.swift
+index 01884c2..b06ba02 100644
+--- a/submodules/Display/Source/GenerateImage.swift
++++ b/submodules/Display/Source/GenerateImage.swift
+@@ -135,7 +135,7 @@ public func generateFilledCircleImage(diameter: CGFloat, color: UIColor?, stroke
+         
+         if let strokeColor = strokeColor, let strokeWidth = strokeWidth {
+             context.setFillColor(strokeColor.cgColor)
+-            context.fillEllipse(in: CGRect(origin: CGPoint(), size: size))
++            AyuPixelStyle.fillEllipse(context, in: CGRect(origin: CGPoint(), size: size))
+             
+             if let color = color {
+                 context.setFillColor(color.cgColor)
+@@ -143,7 +143,7 @@ public func generateFilledCircleImage(diameter: CGFloat, color: UIColor?, stroke
+                 context.setFillColor(UIColor.clear.cgColor)
+                 context.setBlendMode(.copy)
+             }
+-            context.fillEllipse(in: CGRect(origin: CGPoint(x: strokeWidth, y: strokeWidth), size: CGSize(width: size.width - strokeWidth * 2.0, height: size.height - strokeWidth * 2.0)))
++            AyuPixelStyle.fillEllipse(context, in: CGRect(origin: CGPoint(x: strokeWidth, y: strokeWidth), size: CGSize(width: size.width - strokeWidth * 2.0, height: size.height - strokeWidth * 2.0)))
+         } else {
+             if let color = color {
+                 context.setFillColor(color.cgColor)
+@@ -151,7 +151,7 @@ public func generateFilledCircleImage(diameter: CGFloat, color: UIColor?, stroke
+                 context.setFillColor(UIColor.clear.cgColor)
+                 context.setBlendMode(.copy)
+             }
+-            context.fillEllipse(in: CGRect(origin: CGPoint(), size: size))
++            AyuPixelStyle.fillEllipse(context, in: CGRect(origin: CGPoint(), size: size))
+         }
+     })
+ }
+@@ -166,7 +166,7 @@ public func generateFilledRoundedRectImage(size: CGSize, cornerRadius: CGFloat,
+         
+         if let strokeColor = strokeColor, let strokeWidth = strokeWidth {
+             context.setFillColor(strokeColor.cgColor)
+-            context.fillEllipse(in: CGRect(origin: CGPoint(), size: size))
++            AyuPixelStyle.fillEllipse(context, in: CGRect(origin: CGPoint(), size: size))
+             
+             if let color = color {
+                 context.setFillColor(color.cgColor)
+@@ -224,7 +224,7 @@ public func generateCircleImage(diameter: CGFloat, lineWidth: CGFloat, color: UI
+             context.setBlendMode(.copy)
+         }
+         context.setLineWidth(lineWidth)
+-        context.strokeEllipse(in: CGRect(origin: CGPoint(x: lineWidth / 2.0, y: lineWidth / 2.0), size: CGSize(width: size.width - lineWidth, height: size.height - lineWidth)))
++        AyuPixelStyle.strokeEllipse(context, in: CGRect(origin: CGPoint(x: lineWidth / 2.0, y: lineWidth / 2.0), size: CGSize(width: size.width - lineWidth, height: size.height - lineWidth)))
+     })
+ }
+ 
+@@ -265,8 +265,8 @@ public func generateVerticallyStretchableFilledCircleImage(radius: CGFloat, colo
+             context.setFillColor(UIColor.clear.cgColor)
+             context.setBlendMode(.copy)
+         }
+-        context.fillEllipse(in: CGRect(origin: CGPoint(), size: CGSize(width: radius + radius, height: radius + radius)))
+-        context.fillEllipse(in: CGRect(origin: CGPoint(x: 0.0, y: radius), size: CGSize(width: radius + radius, height: radius + radius)))
++        AyuPixelStyle.fillEllipse(context, in: CGRect(origin: CGPoint(), size: CGSize(width: radius + radius, height: radius + radius)))
++        AyuPixelStyle.fillEllipse(context, in: CGRect(origin: CGPoint(x: 0.0, y: radius), size: CGSize(width: radius + radius, height: radius + radius)))
+     })?.stretchableImage(withLeftCapWidth: Int(radius), topCapHeight: Int(radius))
+ }
+ 
+@@ -277,9 +277,9 @@ public func generateSmallHorizontalStretchableFilledCircleImage(diameter: CGFloa
+         if let subImage = generateImage(CGSize(width: diameter + 1.0, height: diameter), contextGenerator: { size, context in
+             context.clear(CGRect(origin: CGPoint(), size: size))
+             context.setFillColor(UIColor.black.cgColor)
+-            context.fillEllipse(in: CGRect(origin: CGPoint(), size: CGSize(width: diameter, height: diameter)))
++            AyuPixelStyle.fillEllipse(context, in: CGRect(origin: CGPoint(), size: CGSize(width: diameter, height: diameter)))
+             context.fill(CGRect(origin: CGPoint(x: diameter / 2.0, y: 0.0), size: CGSize(width: 1.0, height: diameter)))
+-            context.fillEllipse(in: CGRect(origin: CGPoint(x: 1.0, y: 0.0), size: CGSize(width: diameter, height: diameter)))
++            AyuPixelStyle.fillEllipse(context, in: CGRect(origin: CGPoint(x: 1.0, y: 0.0), size: CGSize(width: diameter, height: diameter)))
+         }) {
+             if let backgroundColor = backgroundColor {
+                 context.setFillColor(backgroundColor.cgColor)
+@@ -425,7 +425,7 @@ public func generateGradientFilledCircleImage(diameter: CGFloat, colors: NSArray
+     return generateImage(CGSize(width: diameter, height: diameter), contextGenerator: { size, context in
+         let bounds = CGRect(origin: CGPoint(), size: size)
+         context.clear(bounds)
+-        context.addEllipse(in: bounds)
++        AyuPixelStyle.addEllipse(context, in: bounds)
+         context.clip()
+         
+         var locations: [CGFloat] = []
+diff --git a/submodules/ItemListUI/Sources/Items/ItemListSectionHeaderItem.swift b/submodules/ItemListUI/Sources/Items/ItemListSectionHeaderItem.swift
+index 0c0e81a..860317d 100644
+--- a/submodules/ItemListUI/Sources/Items/ItemListSectionHeaderItem.swift
++++ b/submodules/ItemListUI/Sources/Items/ItemListSectionHeaderItem.swift
+@@ -180,7 +180,7 @@ public class ItemListSectionHeaderItemNode: ListViewItemNode, ItemListItemNode {
+             let leftInset: CGFloat = 15.0 + params.leftInset
+             let rightInset: CGFloat = 15.0 + params.rightInset
+             
+-            let titleFont = Font.regular(item.presentationData.fontSize.itemListBaseHeaderFontSize)
++            let titleFont = AyuPixelStyle.isEnabled ? Font.pixelLabel(item.presentationData.fontSize.itemListBaseHeaderFontSize - 1.0) : Font.regular(item.presentationData.fontSize.itemListBaseHeaderFontSize)
+             
+             var badgeLayoutAndApply: (TextNodeLayout, () -> TextNode)?
+             if let badge = item.badge {
+@@ -206,7 +206,7 @@ public class ItemListSectionHeaderItemNode: ListViewItemNode, ItemListItemNode {
+                 textRightInset += actionLayoutAndApplyValue.0.size.width + 2.0
+             }
+             
+-            let (titleLayout, titleApply) = makeTitleLayout(TextNodeLayoutArguments(attributedString: NSAttributedString(string: item.text, font: titleFont, textColor: item.presentationData.theme.list.sectionHeaderTextColor), backgroundColor: nil, maximumNumberOfLines: item.multiline ? 0 : 1, truncationType: .end, constrainedSize: CGSize(width: params.width - params.leftInset - params.rightInset - textRightInset, height: CGFloat.greatestFiniteMagnitude), alignment: .natural, cutout: nil, insets: UIEdgeInsets()))
++            let (titleLayout, titleApply) = makeTitleLayout(TextNodeLayoutArguments(attributedString: NSAttributedString(string: AyuPixelStyle.isEnabled && !item.text.isEmpty ? "(\(item.text.uppercased()))" : item.text, font: titleFont, textColor: item.presentationData.theme.list.sectionHeaderTextColor), backgroundColor: nil, maximumNumberOfLines: item.multiline ? 0 : 1, truncationType: .end, constrainedSize: CGSize(width: params.width - params.leftInset - params.rightInset - textRightInset, height: CGFloat.greatestFiniteMagnitude), alignment: .natural, cutout: nil, insets: UIEdgeInsets()))
+             var accessoryTextString: NSAttributedString?
+             var accessoryIcon: UIImage?
+             if let accessoryText = item.accessoryText {
+diff --git a/submodules/TelegramUI/Components/Chat/ChatMessageDateAndStatusNode/Sources/ChatMessageDateAndStatusNode.swift b/submodules/TelegramUI/Components/Chat/ChatMessageDateAndStatusNode/Sources/ChatMessageDateAndStatusNode.swift
+index 565cdc5..2377056 100644
+--- a/submodules/TelegramUI/Components/Chat/ChatMessageDateAndStatusNode/Sources/ChatMessageDateAndStatusNode.swift
++++ b/submodules/TelegramUI/Components/Chat/ChatMessageDateAndStatusNode/Sources/ChatMessageDateAndStatusNode.swift
+@@ -642,7 +642,7 @@ public class ChatMessageDateAndStatusNode: ASDisplayNode {
+                 updatedDateText = compactNumericCountString(impressionCount, decimalSeparator: arguments.presentationData.dateTimeFormat.decimalSeparator) + " " + updatedDateText
+             }
+             
+-            let dateFont = Font.regular(floor(arguments.presentationData.fontSize.baseDisplaySize * 11.0 / 17.0))
++            let dateFont = AyuPixelStyle.isEnabled ? Font.pixelLabel(floor(arguments.presentationData.fontSize.baseDisplaySize * 11.0 / 17.0)) : Font.regular(floor(arguments.presentationData.fontSize.baseDisplaySize * 11.0 / 17.0))
+             if let style = ayuDeletedMark.style {
+                 // AyuGram icon mark for a saved deleted message: drawn in the time's colour in the
+                 // views-icon slot; a post that already shows views keeps an emoji instead.
+diff --git a/submodules/TelegramUI/Components/Chat/ChatMessageItemImpl/Sources/ChatMessageDateHeader.swift b/submodules/TelegramUI/Components/Chat/ChatMessageItemImpl/Sources/ChatMessageDateHeader.swift
+index 6abdd13..c0a6565 100644
+--- a/submodules/TelegramUI/Components/Chat/ChatMessageItemImpl/Sources/ChatMessageDateHeader.swift
++++ b/submodules/TelegramUI/Components/Chat/ChatMessageItemImpl/Sources/ChatMessageDateHeader.swift
+@@ -315,7 +315,7 @@ private final class ChatMessageDateContentNode: ASDisplayNode {
+         }
+         self.addSubnode(self.labelNode)
+                 
+-        let titleFont = Font.medium(min(18.0, floor(presentationData.fontSize.baseDisplaySize * 13.0 / 17.0)))
++        let titleFont = AyuPixelStyle.isEnabled ? Font.pixelLabel(min(18.0, floor(presentationData.fontSize.baseDisplaySize * 12.0 / 17.0)), medium: true) : Font.medium(min(18.0, floor(presentationData.fontSize.baseDisplaySize * 13.0 / 17.0)))
+         
+         let attributedString = NSAttributedString(string: text, font: titleFont, textColor: bubbleVariableColor(variableColor: presentationData.theme.theme.chat.serviceMessage.dateTextColor, wallpaper: presentationData.theme.wallpaper))
+         let labelLayout = TextNode.asyncLayout(self.labelNode)
+@@ -336,7 +336,7 @@ private final class ChatMessageDateContentNode: ASDisplayNode {
+         self.backgroundNode.updateColor(color: selectDateFillStaticColor(theme: presentationData.theme.theme, wallpaper: presentationData.theme.wallpaper), enableBlur: fullTranslucency && dateFillNeedsBlur(theme: presentationData.theme.theme, wallpaper: presentationData.theme.wallpaper), transition: .immediate)
+         self.stickBackgroundNode.image = graphics.dateFloatingBackground
+         
+-        let titleFont = Font.medium(min(18.0, floor(presentationData.fontSize.baseDisplaySize * 13.0 / 17.0)))
++        let titleFont = AyuPixelStyle.isEnabled ? Font.pixelLabel(min(18.0, floor(presentationData.fontSize.baseDisplaySize * 12.0 / 17.0)), medium: true) : Font.medium(min(18.0, floor(presentationData.fontSize.baseDisplaySize * 13.0 / 17.0)))
+         
+         let attributedString = NSAttributedString(string: self.text, font: titleFont, textColor: bubbleVariableColor(variableColor: presentationData.theme.theme.chat.serviceMessage.dateTextColor, wallpaper: presentationData.theme.wallpaper))
+         let labelLayout = TextNode.asyncLayout(self.labelNode)
+@@ -503,7 +503,7 @@ private final class ChatMessagePeerContentNode: ASDisplayNode {
+         }
+         self.addSubnode(self.labelNode)
+                 
+-        let titleFont = Font.medium(min(18.0, floor(presentationData.fontSize.baseDisplaySize * 13.0 / 17.0)))
++        let titleFont = AyuPixelStyle.isEnabled ? Font.pixelLabel(min(18.0, floor(presentationData.fontSize.baseDisplaySize * 12.0 / 17.0)), medium: true) : Font.medium(min(18.0, floor(presentationData.fontSize.baseDisplaySize * 13.0 / 17.0)))
+         
+         let attributedString = NSAttributedString(string: text, font: titleFont, textColor: bubbleVariableColor(variableColor: presentationData.theme.theme.chat.serviceMessage.dateTextColor, wallpaper: presentationData.theme.wallpaper))
+         let labelLayout = TextNode.asyncLayout(self.labelNode)
+@@ -528,7 +528,7 @@ private final class ChatMessagePeerContentNode: ASDisplayNode {
+         self.backgroundNode.updateColor(color: selectDateFillStaticColor(theme: presentationData.theme.theme, wallpaper: presentationData.theme.wallpaper), enableBlur: fullTranslucency && dateFillNeedsBlur(theme: presentationData.theme.theme, wallpaper: presentationData.theme.wallpaper), transition: .immediate)
+         self.stickBackgroundNode.image = graphics.dateFloatingBackground
+         
+-        let titleFont = Font.medium(min(18.0, floor(presentationData.fontSize.baseDisplaySize * 13.0 / 17.0)))
++        let titleFont = AyuPixelStyle.isEnabled ? Font.pixelLabel(min(18.0, floor(presentationData.fontSize.baseDisplaySize * 12.0 / 17.0)), medium: true) : Font.medium(min(18.0, floor(presentationData.fontSize.baseDisplaySize * 13.0 / 17.0)))
+         
+         let attributedString = NSAttributedString(string: self.text, font: titleFont, textColor: bubbleVariableColor(variableColor: presentationData.theme.theme.chat.serviceMessage.dateTextColor, wallpaper: presentationData.theme.wallpaper))
+         let labelLayout = TextNode.asyncLayout(self.labelNode)
+diff --git a/submodules/TelegramUI/Components/ChatList/ChatListFilterTabContainerNode/Sources/ChatListFilterTabContainerNode.swift b/submodules/TelegramUI/Components/ChatList/ChatListFilterTabContainerNode/Sources/ChatListFilterTabContainerNode.swift
+index 859cc93..fb6220f 100644
+--- a/submodules/TelegramUI/Components/ChatList/ChatListFilterTabContainerNode/Sources/ChatListFilterTabContainerNode.swift
++++ b/submodules/TelegramUI/Components/ChatList/ChatListFilterTabContainerNode/Sources/ChatListFilterTabContainerNode.swift
+@@ -301,11 +301,11 @@ private final class ItemNode: ASDisplayNode {
+         self.shortTitleActiveNode.visibility = title.enableAnimations
+         
+         if themeUpdated || titleUpdated {
+-            self.titleNode.attributedText = title.attributedString(font: Font.medium(14.0), textColor: presentationData.theme.chat.inputPanel.panelControlColor)
+-            self.titleActiveNode.attributedText = title.attributedString(font: Font.medium(14.0), textColor: presentationData.theme.chat.inputPanel.panelControlColor)
++            self.titleNode.attributedText = title.attributedString(font: AyuPixelStyle.isEnabled ? Font.pixelLabel(12.0, medium: true) : Font.medium(14.0), textColor: presentationData.theme.chat.inputPanel.panelControlColor)
++            self.titleActiveNode.attributedText = title.attributedString(font: AyuPixelStyle.isEnabled ? Font.pixelLabel(12.0, medium: true) : Font.medium(14.0), textColor: presentationData.theme.chat.inputPanel.panelControlColor)
+             
+-            self.shortTitleNode.attributedText = shortTitle.attributedString(font: Font.medium(14.0), textColor: presentationData.theme.chat.inputPanel.panelControlColor)
+-            self.shortTitleActiveNode.attributedText = shortTitle.attributedString(font: Font.medium(14.0), textColor: presentationData.theme.chat.inputPanel.panelControlColor)
++            self.shortTitleNode.attributedText = shortTitle.attributedString(font: AyuPixelStyle.isEnabled ? Font.pixelLabel(12.0, medium: true) : Font.medium(14.0), textColor: presentationData.theme.chat.inputPanel.panelControlColor)
++            self.shortTitleActiveNode.attributedText = shortTitle.attributedString(font: AyuPixelStyle.isEnabled ? Font.pixelLabel(12.0, medium: true) : Font.medium(14.0), textColor: presentationData.theme.chat.inputPanel.panelControlColor)
+         }
+         
+         if unreadCount != 0 {
+diff --git a/submodules/TelegramUI/Components/ChatListTitleView/Sources/ChatListTitleView.swift b/submodules/TelegramUI/Components/ChatListTitleView/Sources/ChatListTitleView.swift
+index c380872..864ed93 100644
+--- a/submodules/TelegramUI/Components/ChatListTitleView/Sources/ChatListTitleView.swift
++++ b/submodules/TelegramUI/Components/ChatListTitleView/Sources/ChatListTitleView.swift
+@@ -12,7 +12,7 @@ import TelegramCore
+ import ComponentDisplayAdapters
+ import AccountContext
+ 
+-private let titleFont = AyuPixelStyle.isEnabled ? Font.pixelTitle(17.0) : Font.with(size: 17.0, design: .regular, weight: .semibold, traits: [.monospacedNumbers])
++private let titleFont = AyuPixelStyle.isEnabled ? Font.pixelTitle(26.0) : Font.with(size: 17.0, design: .regular, weight: .semibold, traits: [.monospacedNumbers])
+ 
+ public struct NetworkStatusTitle: Equatable {
+     public enum Status: Equatable {
+@@ -82,7 +82,7 @@ public final class ChatListTitleView: UIView, NavigationBarTitleView, Navigation
+         self._title = title
+         
+         if self._title != oldValue {
+-            self.titleNode.attributedText = NSAttributedString(string: self.title.text, font: titleFont, textColor: self.theme.rootController.navigationBar.primaryTextColor)
++            self.titleNode.attributedText = NSAttributedString(string: AyuPixelStyle.isEnabled ? self.title.text.uppercased() : self.title.text, font: titleFont, textColor: self.theme.rootController.navigationBar.primaryTextColor)
+             self.buttonView.accessibilityLabel = self.title.text
+             self.activityIndicator.isHidden = !self.title.activity
+            
+@@ -211,7 +211,7 @@ public final class ChatListTitleView: UIView, NavigationBarTitleView, Navigation
+     public var theme: PresentationTheme {
+         didSet {
+             if self.theme !== oldValue {
+-                self.titleNode.attributedText = NSAttributedString(string: self.title.text, font: titleFont, textColor: self.theme.rootController.navigationBar.primaryTextColor)
++                self.titleNode.attributedText = NSAttributedString(string: AyuPixelStyle.isEnabled ? self.title.text.uppercased() : self.title.text, font: titleFont, textColor: self.theme.rootController.navigationBar.primaryTextColor)
+                 
+                 self.lockView.updateTheme(self.theme)
+                 
+diff --git a/submodules/TelegramUI/Components/GlassBackgroundComponent/Sources/GlassBackgroundComponent.swift b/submodules/TelegramUI/Components/GlassBackgroundComponent/Sources/GlassBackgroundComponent.swift
+index 24b4fba..5362cc5 100644
+--- a/submodules/TelegramUI/Components/GlassBackgroundComponent/Sources/GlassBackgroundComponent.swift
++++ b/submodules/TelegramUI/Components/GlassBackgroundComponent/Sources/GlassBackgroundComponent.swift
+@@ -679,6 +679,7 @@ public class GlassBackgroundView: UIView {
+     }
+ 
+     func update(size: CGSize, shape: Shape, isDark: Bool, tintColor: TintColor, isInteractive: Bool = false, isVisible: Bool = true, transition: ComponentTransition) {
++        let shape: Shape = AyuPixelStyle.isEnabled ? .roundedRect(cornerRadius: 0.0) : shape
+         
+         if let glassHighlightRecognizer = self.glassHighlightRecognizer {
+             glassHighlightRecognizer.isEnabled = isInteractive
+@@ -718,9 +719,11 @@ public class GlassBackgroundView: UIView {
+                     style = .normal
+                 }
+             }
+-            legacyView.update(size: size, shape: shape, style: style, transition: transition)
++            if !AyuPixelStyle.isEnabled {
++                legacyView.update(size: size, shape: shape, style: style, transition: transition)
++            }
+             transition.setFrame(view: legacyView, frame: CGRect(origin: CGPoint(), size: size))
+-            transition.setAlpha(view: legacyView, alpha: isVisible ? 1.0 : 0.0)
++            transition.setAlpha(view: legacyView, alpha: (isVisible && !AyuPixelStyle.isEnabled) ? 1.0 : 0.0)
+             
+             transition.setPosition(view: self.contentView, position: CGPoint(x: size.width * 0.5, y: size.height * 0.5))
+             transition.setBounds(view: self.contentView, bounds: CGRect(origin: CGPoint(), size: size))
+@@ -778,7 +781,7 @@ public class GlassBackgroundView: UIView {
+             if let shadowView = self.shadowView {
+                 switch shape {
+                 case let .roundedRect(cornerRadius):
+-                    shadowView.image = Self.generateLegacyShadowImage(cornerRadius: cornerRadius, shadowInset: shadowInset)
++                    shadowView.image = AyuPixelStyle.isEnabled ? nil : Self.generateLegacyShadowImage(cornerRadius: cornerRadius, shadowInset: shadowInset)
+                 case let .customRoundedRect(cornerRadii):
+                     shadowView.image = Self.generateLegacyShadowImage(cornerRadii: GlassBackgroundView.clampedCornerRadii(size: size, cornerRadii: cornerRadii), shadowInset: shadowInset)
+                 }
+@@ -810,13 +813,20 @@ public class GlassBackgroundView: UIView {
+                 }
+                 switch shape {
+                 case let .roundedRect(cornerRadius):
+-                    foregroundView.image = GlassBackgroundView.generateLegacyGlassImage(size: CGSize(width: cornerRadius * 2.0, height: cornerRadius * 2.0), inset: shadowInset, borderWidthFactor: borderWidthFactor, isDark: isDark, fillColor: fillColor)
++                    foregroundView.image = AyuPixelStyle.isEnabled ? nil : GlassBackgroundView.generateLegacyGlassImage(size: CGSize(width: cornerRadius * 2.0, height: cornerRadius * 2.0), inset: shadowInset, borderWidthFactor: borderWidthFactor, isDark: isDark, fillColor: fillColor)
+                 case let .customRoundedRect(cornerRadii):
+                     foregroundView.image = GlassBackgroundView.generateLegacyGlassImage(cornerRadii: GlassBackgroundView.clampedCornerRadii(size: size, cornerRadii: cornerRadii), inset: shadowInset, borderWidthFactor: borderWidthFactor, isDark: isDark, fillColor: fillColor)
+                 }
+                 #if DEBUG
+                 //foregroundView.image = nil
+                 #endif
++                if AyuPixelStyle.isEnabled {
++                    var panelFillColor: UIColor = isDark ? .black : .white
++                    if case let .custom(_, color) = tintColor.kind, color.alpha > 0.01 {
++                        panelFillColor = color.withAlphaComponent(1.0)
++                    }
++                    foregroundView.image = AyuPixelStyle.panelImage(fillColor: panelFillColor, borderColor: isDark ? .white : .black, inset: shadowInset)
++                }
+                 transition.setAlpha(view: foregroundView, alpha: isVisible ? 1.0 : 0.0)
+             } else {
+                 if let nativeView = self.nativeView {
+diff --git a/submodules/TelegramUI/Components/TabBarComponent/Sources/TabBarComponent.swift b/submodules/TelegramUI/Components/TabBarComponent/Sources/TabBarComponent.swift
+index 29a5fa6..0188683 100644
+--- a/submodules/TelegramUI/Components/TabBarComponent/Sources/TabBarComponent.swift
++++ b/submodules/TelegramUI/Components/TabBarComponent/Sources/TabBarComponent.swift
+@@ -906,9 +906,9 @@ public final class TabBarComponent: Component {
+                 let isDark = component.theme.overallDarkAppearance
+                 transition.setFrame(view: self.materialContentView, frame: CGRect(origin: CGPoint(), size: tabsSize))
+                 // Material 3 secondary container behind the selected icon: a 64 x 32 pill.
+-                self.materialIndicatorView.backgroundColor = isDark ? UIColor(rgb: 0x4a4458) : UIColor(rgb: 0xe8def8)
++                self.materialIndicatorView.backgroundColor = AyuPixelStyle.isEnabled ? (isDark ? UIColor.white : UIColor.black) : (isDark ? UIColor(rgb: 0x4a4458) : UIColor(rgb: 0xe8def8))
+                 if let selectedItemFrame, !(search?.isActive ?? false) {
+-                    let indicatorFrame = CGRect(x: selectedItemFrame.midX - 32.0, y: selectedItemFrame.minY + 2.0, width: 64.0, height: 32.0)
++                    let indicatorFrame = AyuPixelStyle.isEnabled ? selectedItemFrame : CGRect(x: selectedItemFrame.midX - 32.0, y: selectedItemFrame.minY + 2.0, width: 64.0, height: 32.0)
+                     transition.setFrame(view: self.materialIndicatorView, frame: indicatorFrame)
+                     transition.setAlpha(view: self.materialIndicatorView, alpha: 1.0)
+                 } else {
+@@ -977,7 +977,15 @@ public final class TabBarComponent: Component {
+                 // Material 3 surface container, a rounded bar instead of the glass capsule.
+                 self.materialBackgroundView.backgroundColor = component.theme.overallDarkAppearance ? UIColor(rgb: 0x211f26) : UIColor(rgb: 0xf3edf7)
+                 self.materialBackgroundView.layer.cornerRadius = min(24.0, tabsSize.height * 0.5)
+-                transition.setFrame(view: self.materialBackgroundView, frame: CGRect(origin: CGPoint(), size: tabsSize))
++                if AyuPixelStyle.isEnabled {
++                    // Edge to edge with a line on top. The sides and the bottom of the border stay off screen.
++                    self.materialBackgroundView.backgroundColor = component.theme.overallDarkAppearance ? UIColor.black : UIColor.white
++                    self.materialBackgroundView.layer.borderWidth = 1.0
++                    self.materialBackgroundView.layer.borderColor = (component.theme.overallDarkAppearance ? UIColor.white : UIColor.black).cgColor
++                    transition.setFrame(view: self.materialBackgroundView, frame: CGRect(x: -component.outerInsets.left - 1.0, y: 0.0, width: tabsSize.width + component.outerInsets.left + component.outerInsets.right + 2.0, height: tabsSize.height + component.outerInsets.bottom + 40.0))
++                } else {
++                    transition.setFrame(view: self.materialBackgroundView, frame: CGRect(origin: CGPoint(), size: tabsSize))
++                }
+             }
+ 
+             return size
+@@ -1143,7 +1151,9 @@ private final class ItemComponent: Component {
+             self.component = component
+             self.state = state
+ 
+-            let iconTintColor = (component.isSelected && component.tintSelectedItem && !component.isSearchActive) ? component.theme.rootController.tabBar.selectedTextColor : component.theme.rootController.tabBar.textColor
++            // The selected cell is filled with the ink color, so its content takes the ground color.
++            let selectedColor: UIColor = AyuPixelStyle.isEnabled ? (component.theme.overallDarkAppearance ? .black : .white) : component.theme.rootController.tabBar.selectedTextColor
++            let iconTintColor = (component.isSelected && component.tintSelectedItem && !component.isSearchActive) ? selectedColor : component.theme.rootController.tabBar.textColor
+ 
+             let title: String
+             let badgeValue: String?
+@@ -1164,7 +1174,8 @@ private final class ItemComponent: Component {
+                 title = tabBarItem.title ?? " "
+                 badgeValue = tabBarItem.badgeValue
+ 
+-                if let animationName = tabBarItem.animationName {
++                let pixelIcon = tabBarItem.animationName.flatMap { AyuPixelStyle.tabIcon(named: $0) }
++                if let animationName = tabBarItem.animationName, pixelIcon == nil {
+                     if let imageIcon = self.imageIcon {
+                         self.imageIcon = nil
+                         imageIcon.view?.removeFromSuperview()
+@@ -1225,7 +1236,7 @@ private final class ItemComponent: Component {
+                         self.imageIcon = imageIcon
+                     }
+ 
+-                    let iconImage = component.isSelected ? tabBarItem.selectedImage : tabBarItem.image
++                    let iconImage = pixelIcon ?? (component.isSelected ? tabBarItem.selectedImage : tabBarItem.image)
+                     let iconSize = imageIcon.update(
+                         transition: iconTransition,
+                         component: AnyComponent(Image(
+@@ -1253,6 +1264,43 @@ private final class ItemComponent: Component {
+                 badgeValue = customItem.badge
+ 
+                 switch customItem.icon {
++                case let .animation(name, _) where AyuPixelStyle.tabIcon(named: name) != nil:
++                    if let animationIcon = self.animationIcon {
++                        self.animationIcon = nil
++                        animationIcon.view?.removeFromSuperview()
++                    }
++
++                    let imageIcon: ComponentView<Empty>
++                    var iconTransition = transition
++                    if let current = self.imageIcon {
++                        imageIcon = current
++                    } else {
++                        iconTransition = iconTransition.withAnimation(.none)
++                        imageIcon = ComponentView()
++                        self.imageIcon = imageIcon
++                    }
++
++                    let iconSize = imageIcon.update(
++                        transition: iconTransition,
++                        component: AnyComponent(Image(
++                            image: AyuPixelStyle.tabIcon(named: name),
++                            tintColor: iconTintColor,
++                            contentMode: .center
++                        )),
++                        environment: {},
++                        containerSize: CGSize(width: 100.0, height: 100.0)
++                    )
++                    let iconFrame = CGRect(origin: CGPoint(x: floor((availableSize.width - iconSize.width) * 0.5), y: iconY(regular: 3.0, height: iconSize.height)), size: iconSize)
++                    if let imageIconView = imageIcon.view {
++                        if imageIconView.superview == nil {
++                            if let badgeView = self.badge?.view {
++                                self.contextContainerView.contentView.insertSubview(imageIconView, belowSubview: badgeView)
++                            } else {
++                                self.contextContainerView.contentView.addSubview(imageIconView)
++                            }
++                        }
++                        iconTransition.setFrame(view: imageIconView, frame: iconFrame)
++                    }
+                 case let .animation(name, offset):
+                     if let imageIcon = self.imageIcon {
+                         self.imageIcon = nil
+@@ -1338,7 +1386,7 @@ private final class ItemComponent: Component {
+             let titleSize = self.title.update(
+                 transition: .immediate,
+                 component: AnyComponent(MultilineTextComponent(
+-                    text: .plain(NSAttributedString(string: title, font: Font.semibold(10.0), textColor: (component.isSelected && component.tintSelectedItem) ? component.theme.rootController.tabBar.selectedTextColor : component.theme.rootController.tabBar.textColor))
++                    text: .plain(NSAttributedString(string: AyuPixelStyle.isEnabled ? title.uppercased() : title, font: AyuPixelStyle.isEnabled ? Font.pixelLabel(10.0) : Font.semibold(10.0), textColor: (component.isSelected && component.tintSelectedItem) ? selectedColor : component.theme.rootController.tabBar.textColor))
+                 )),
+                 environment: {},
+                 containerSize: CGSize(width: availableSize.width, height: 100.0)
+diff --git a/submodules/WallpaperBackgroundNode/Sources/WallpaperBackgroundNode.swift b/submodules/WallpaperBackgroundNode/Sources/WallpaperBackgroundNode.swift
+index 85c72cd..c38f43b 100644
+--- a/submodules/WallpaperBackgroundNode/Sources/WallpaperBackgroundNode.swift
++++ b/submodules/WallpaperBackgroundNode/Sources/WallpaperBackgroundNode.swift
+@@ -1004,6 +1004,7 @@ public final class WallpaperBackgroundNodeImpl: ASDisplayNode, WallpaperBackgrou
+     private let useSharedAnimationPhase: Bool
+     
+     let contentNode: ASDisplayNode
++    private let ayuDotsLayer = CALayer()
+     
+     let edgeEffectNodes = SparseBag<Weak<WallpaperEdgeEffectNodeImpl>>()
+     
+@@ -1254,6 +1255,10 @@ public final class WallpaperBackgroundNodeImpl: ASDisplayNode, WallpaperBackgrou
+         self.clipsToBounds = true
+         self.contentNode.frame = self.bounds
+         self.addSubnode(self.contentNode)
++        if AyuPixelStyle.isEnabled {
++            self.ayuDotsLayer.backgroundColor = AyuPixelStyle.wallpaperDotsColor.cgColor
++            self.contentNode.layer.addSublayer(self.ayuDotsLayer)
++        }
+         self.layer.addSublayer(self.patternImageLayer)
+         
+         self.layer.addSublayer(self.dimLayer)
+@@ -1812,6 +1817,10 @@ public final class WallpaperBackgroundNodeImpl: ASDisplayNode, WallpaperBackgrou
+     }
+     
+     public func updateLayout(size: CGSize, displayMode: WallpaperDisplayMode, transition: ContainedViewLayoutTransition) {
++        if AyuPixelStyle.isEnabled {
++            self.ayuDotsLayer.zPosition = 1000.0
++            transition.updateFrame(layer: self.ayuDotsLayer, frame: CGRect(origin: CGPoint(), size: size))
++        }
+         let isFirstLayout = self.validLayout == nil
+         self.validLayout = (size, displayMode)
+         
