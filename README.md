@@ -72,7 +72,7 @@ Opt-in scheduled sending and read-after-send, Telegram/LibreTranslate/DeepL tran
 
 ## Pixel style (development source)
 
-A black-and-white pixel look: grayscale colors, square corners, flat panels, pixel icons, mosaic avatars, Golos Text, Handjet and IBM Plex Mono fonts. It is on for the whole app and has no setting yet. The latest block has not been compiled. See [scope and device checks](docs/PIXEL_STYLE.md).
+A black-and-white pixel look: grayscale colors, square corners, flat panels, pixel icons, mosaic avatars, Golos Text, Handjet and IBM Plex Mono fonts. It is on by default. **Settings → AyuGram Preferences → Themes** switches it off or to another `.ayutheme` file, a small file of values that holds no code. See [scope and device checks](docs/PIXEL_STYLE.md) and [writing themes](docs/THEMES.md).
 
 ## Cloud builds from Windows
 

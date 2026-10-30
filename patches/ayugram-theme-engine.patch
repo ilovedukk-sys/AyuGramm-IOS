@@ -1,0 +1,1025 @@
+diff --git a/Telegram/BUILD b/Telegram/BUILD
+index c714d3d..0a89315 100644
+--- a/Telegram/BUILD
++++ b/Telegram/BUILD
+@@ -1869,6 +1869,16 @@ plist_fragment(
+             <key>UTTypeTagSpecification</key>
+             <dict><key>public.filename-extension</key><array><string>plugin</string></array></dict>
+         </dict>
++        <dict>
++            <key>UTTypeIdentifier</key>
++            <string>one.ayugram.ios.theme</string>
++            <key>UTTypeDescription</key>
++            <string>AyuGram Theme</string>
++            <key>UTTypeConformsTo</key>
++            <array><string>public.data</string></array>
++            <key>UTTypeTagSpecification</key>
++            <dict><key>public.filename-extension</key><array><string>ayutheme</string></array></dict>
++        </dict>
+         <dict>
+             <key>UTTypeConformsTo</key>
+             <array>
+@@ -1899,6 +1909,12 @@ plist_fragment(
+             <key>LSHandlerRank</key><string>Alternate</string>
+             <key>LSItemContentTypes</key><array><string>one.ayugram.ios.plugin</string></array>
+         </dict>
++        <dict>
++            <key>CFBundleTypeName</key><string>AyuGram Theme</string>
++            <key>CFBundleTypeRole</key><string>Viewer</string>
++            <key>LSHandlerRank</key><string>Alternate</string>
++            <key>LSItemContentTypes</key><array><string>one.ayugram.ios.theme</string></array>
++        </dict>
+         <dict>
+             <key>CFBundleTypeName</key><string>Telegram Theme</string>
+             <key>CFBundleTypeRole</key><string>Viewer</string>
+diff --git a/submodules/AppBundle/Sources/AppBundle/AppBundle.m b/submodules/AppBundle/Sources/AppBundle/AppBundle.m
+index 939ddc1..163caba 100644
+--- a/submodules/AppBundle/Sources/AppBundle/AppBundle.m
++++ b/submodules/AppBundle/Sources/AppBundle/AppBundle.m
+@@ -3,8 +3,40 @@
+ #import <QuartzCore/QuartzCore.h>
+ #import <objc/runtime.h>
+ 
+-// Keep in sync with AyuPixelStyle.isEnabled in Display.
+-static const BOOL AyuPixelStyleEnabled = YES;
++// The values of the active theme, written by AyuThemeStore in Display. They are read here because
++// the hooks below are set up before any Swift code runs. App extensions keep the standard look.
++static BOOL AyuPixelStyleEnabled = NO;
++static CGFloat AyuIconGrid = 1.0;
++
++static void AyuLoadThemeRuntime(void) {
++    static dispatch_once_t onceToken;
++    dispatch_once(&onceToken, ^{
++        if ([[NSBundle mainBundle].bundlePath hasSuffix:@".appex"]) {
++            return;
++        }
++        NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
++        if ([defaults boolForKey:@"ayu.theme.stock"]) {
++            return;
++        }
++        // Launches that keep dying within 20 seconds switch the theme off, so that a theme can always be replaced.
++        NSInteger attempts = [defaults integerForKey:@"ayu.theme.launchAttempts"] + 1;
++        if (attempts > 3) {
++            [defaults removeObjectForKey:@"ayu.theme.launchAttempts"];
++            [defaults setBool:YES forKey:@"ayu.theme.stock"];
++            [defaults setBool:YES forKey:@"ayu.theme.recovered"];
++            return;
++        }
++        [defaults setInteger:attempts forKey:@"ayu.theme.launchAttempts"];
++        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(20.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
++            [[NSUserDefaults standardUserDefaults] removeObjectForKey:@"ayu.theme.launchAttempts"];
++        });
++        AyuPixelStyleEnabled = YES;
++        id grid = [defaults objectForKey:@"ayu.theme.iconGrid"];
++        if ([grid isKindOfClass:[NSNumber class]]) {
++            AyuIconGrid = [grid doubleValue];
++        }
++    });
++}
+ 
+ static void AyuExchangeMethods(Method original, Method replacement) {
+     if (original != NULL && replacement != NULL) {
+@@ -18,6 +50,7 @@ static void AyuExchangeMethods(Method original, Method replacement) {
+ @implementation CALayer (AyuPixelStyle)
+ 
+ + (void)load {
++    AyuLoadThemeRuntime();
+     if (!AyuPixelStyleEnabled) {
+         return;
+     }
+@@ -47,6 +80,7 @@ static void AyuExchangeMethods(Method original, Method replacement) {
+ @implementation UIBezierPath (AyuPixelStyle)
+ 
+ + (void)load {
++    AyuLoadThemeRuntime();
+     if (!AyuPixelStyleEnabled) {
+         return;
+     }
+@@ -67,7 +101,7 @@ static void AyuExchangeMethods(Method original, Method replacement) {
+ // Redraws a small icon on a one point grid: coverage under the threshold is dropped,
+ // everything else becomes solid gray. Large and stretchable images stay as they are.
+ static UIImage *AyuPixelatedImage(UIImage *image) {
+-    if (image == nil || image.images != nil || !UIEdgeInsetsEqualToEdgeInsets(image.capInsets, UIEdgeInsetsZero)) {
++    if (AyuIconGrid <= 0.0 || image == nil || image.images != nil || !UIEdgeInsetsEqualToEdgeInsets(image.capInsets, UIEdgeInsetsZero)) {
+         return image;
+     }
+     CGSize size = image.size;
+@@ -76,8 +110,8 @@ static UIImage *AyuPixelatedImage(UIImage *image) {
+     if (maxSide < 1.0 || maxSide > 64.0 || source == NULL) {
+         return image;
+     }
+-    size_t gridWidth = MAX((size_t)1, (size_t)round(size.width));
+-    size_t gridHeight = MAX((size_t)1, (size_t)round(size.height));
++    size_t gridWidth = MAX((size_t)1, (size_t)round(size.width / AyuIconGrid));
++    size_t gridHeight = MAX((size_t)1, (size_t)round(size.height / AyuIconGrid));
+     size_t fullWidth = CGImageGetWidth(source);
+     size_t fullHeight = CGImageGetHeight(source);
+     CGBitmapInfo bitmapInfo = (CGBitmapInfo)kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big;
+@@ -154,6 +188,7 @@ NSBundle * _Nonnull getAppBundle() {
+ 
+ - (instancetype _Nullable)initWithBundleImageName:(NSString * _Nonnull)bundleImageName {
+     UIImage *image = [UIImage imageNamed:bundleImageName inBundle:getAppBundle() compatibleWithTraitCollection:nil];
++    AyuLoadThemeRuntime();
+     if (!AyuPixelStyleEnabled || image == nil) {
+         return image;
+     }
+diff --git a/submodules/Display/Source/AyuPixelStyle.swift b/submodules/Display/Source/AyuPixelStyle.swift
+index a360741..6cd258f 100644
+--- a/submodules/Display/Source/AyuPixelStyle.swift
++++ b/submodules/Display/Source/AyuPixelStyle.swift
+@@ -2,11 +2,15 @@ import Foundation
+ import UIKit
+ import UIKitRuntimeUtils
+ 
+-// Monochrome pixel look. Every change of the style checks this one switch.
++// Monochrome pixel look. Every change of the style checks this one switch. The values come from
++// the active theme, which is read once per launch.
+ public enum AyuPixelStyle {
+-    public static var isEnabled: Bool {
+-        return true
+-    }
++    public static let theme: AyuTheme? = AyuThemeStore.loadActive()
++    public static let isEnabled: Bool = AyuPixelStyle.theme != nil
++    public static let animationStepsPerSecond: Int = AyuPixelStyle.theme?.animation.stepsPerSecond ?? 0
++
++    private static let paletteDark: UInt32 = AyuPixelStyle.theme.flatMap { AyuTheme.rgb(hex: $0.palette.dark) } ?? 0x000000
++    private static let paletteLight: UInt32 = AyuPixelStyle.theme.flatMap { AyuTheme.rgb(hex: $0.palette.light) } ?? 0xffffff
+ 
+     // Rec. 709 luma; the alpha byte of an ARGB value is kept.
+     public static func monochrome(_ value: UInt32) -> UInt32 {
+@@ -17,7 +21,14 @@ public enum AyuPixelStyle {
+         let green = (value >> 8) & 0xff
+         let blue = value & 0xff
+         let luma = (red * 2126 + green * 7152 + blue * 722 + 5000) / 10000
+-        return (value & 0xff000000) | (luma << 16) | (luma << 8) | luma
++        // Black becomes the palette's dark color and white its light color.
++        func channel(_ shift: UInt32) -> UInt32 {
++            let dark = (self.paletteDark >> shift) & 0xff
++            let light = (self.paletteLight >> shift) & 0xff
++            let mixed = light >= dark ? dark + (light - dark) * luma / 255 : dark - (dark - light) * luma / 255
++            return mixed << shift
++        }
++        return (value & 0xff000000) | channel(16) | channel(8) | channel(0)
+     }
+ 
+     public static func fillEllipse(_ context: CGContext, in rect: CGRect) {
+@@ -46,21 +57,23 @@ public enum AyuPixelStyle {
+ 
+     // Stickers, custom emoji and Lottie animations: gray, on a grid of `cell` points.
+     public static func applyMediaStyle(to layer: CALayer, cell: CGFloat = 1.0) {
+-        guard self.isEnabled else {
++        guard let media = self.theme?.media else {
+             return
+         }
+-        if layer.filters == nil, let filter = makeGrayscaleFilter() {
++        if media.gray, layer.filters == nil, let filter = makeGrayscaleFilter() {
+             layer.filters = [filter]
+         }
+-        layer.magnificationFilter = .nearest
+-        layer.rasterizationScale = 1.0 / cell
+-        layer.shouldRasterize = true
++        if media.grid > 0 {
++            layer.magnificationFilter = .nearest
++            layer.rasterizationScale = 1.0 / (cell * CGFloat(media.grid))
++            layer.shouldRasterize = true
++        }
+     }
+ 
+     // Gray with the brightness scaled, so that a red heart does not vanish on a black chip
+     // and a yellow face does not vanish on a white one.
+     public static func applyIconContrast(to layer: CALayer, onDarkGround: Bool) {
+-        guard self.isEnabled, let filter = CALayer.colorMatrix() else {
++        guard self.theme?.media.gray == true, let filter = CALayer.colorMatrix() else {
+             return
+         }
+         let gain: Float = onDarkGround ? 3.0 : 0.5
+@@ -94,7 +107,7 @@ public enum AyuPixelStyle {
+     }
+ 
+     public static func steppedFraction(_ value: CGFloat, steps: CGFloat = 5.0) -> CGFloat {
+-        guard self.isEnabled else {
++        guard self.animationStepsPerSecond > 0 else {
+             return value
+         }
+         return ceil(value * steps) / steps
+@@ -121,13 +134,17 @@ public enum AyuPixelStyle {
+         guard image.size.width >= 16.0, image.size.height >= 16.0, let cgImage = image.cgImage else {
+             return image
+         }
+-        let cells = 24
+-        let colorSpace = CGColorSpaceCreateDeviceGray()
+-        guard let context = CGContext(data: nil, width: cells, height: cells, bitsPerComponent: 8, bytesPerRow: 0, space: colorSpace, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
++        guard let avatars = self.theme?.avatars, avatars.mosaic > 0 || avatars.gray else {
++            return image
++        }
++        let columns = avatars.mosaic > 0 ? avatars.mosaic : cgImage.width
++        let rows = avatars.mosaic > 0 ? avatars.mosaic : cgImage.height
++        let colorSpace = avatars.gray ? CGColorSpaceCreateDeviceGray() : CGColorSpaceCreateDeviceRGB()
++        guard let context = CGContext(data: nil, width: columns, height: rows, bitsPerComponent: 8, bytesPerRow: 0, space: colorSpace, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
+             return image
+         }
+         context.interpolationQuality = .high
+-        context.draw(cgImage, in: CGRect(x: 0.0, y: 0.0, width: CGFloat(cells), height: CGFloat(cells)))
++        context.draw(cgImage, in: CGRect(x: 0.0, y: 0.0, width: CGFloat(columns), height: CGFloat(rows)))
+         guard let mosaic = context.makeImage() else {
+             return image
+         }
+diff --git a/submodules/Display/Source/AyuTheme.swift b/submodules/Display/Source/AyuTheme.swift
+new file mode 100644
+index 0000000..3e3c0fa
+--- /dev/null
++++ b/submodules/Display/Source/AyuTheme.swift
+@@ -0,0 +1,366 @@
++import Foundation
++
++public enum AyuThemeError: LocalizedError {
++    case invalidFile
++    case newerFormat
++    case unreadablePalette
++
++    public var errorDescription: String? {
++        switch self {
++        case .invalidFile:
++            return "Invalid .ayutheme file."
++        case .newerFormat:
++            return "This theme needs a newer version of the app."
++        case .unreadablePalette:
++            return "The palette colors are too close to each other: text would be unreadable."
++        }
++    }
++}
++
++/// A theme file: values for the pixel style, read once at launch. It holds no code.
++public struct AyuTheme: Codable, Equatable {
++    public static let formatName = "ayu-theme-1"
++    public static let fileExtension = "ayutheme"
++    public static let maximumFileBytes = 64 * 1024
++
++    public struct Palette: Codable, Equatable {
++        public var dark: String = "#000000"
++        public var light: String = "#FFFFFF"
++
++        public init() {
++        }
++
++        private enum CodingKeys: String, CodingKey {
++            case dark, light
++        }
++
++        public init(from decoder: Decoder) throws {
++            let container = try decoder.container(keyedBy: CodingKeys.self)
++            self.dark = try container.decodeIfPresent(String.self, forKey: .dark) ?? self.dark
++            self.light = try container.decodeIfPresent(String.self, forKey: .light) ?? self.light
++        }
++    }
++
++    public enum FontChoice: String, Codable {
++        case golos, handjet, plex, system
++
++        public var postScriptName: String? {
++            switch self {
++            case .golos:
++                return "GolosText-Regular"
++            case .handjet:
++                return "Handjet-Regular"
++            case .plex:
++                return "IBMPlexMono-Regular"
++            case .system:
++                return nil
++            }
++        }
++    }
++
++    public struct Fonts: Codable, Equatable {
++        public var body: FontChoice = .golos
++        public var title: FontChoice = .handjet
++        public var label: FontChoice = .plex
++
++        public init() {
++        }
++
++        private enum CodingKeys: String, CodingKey {
++            case body, title, label
++        }
++
++        public init(from decoder: Decoder) throws {
++            let container = try decoder.container(keyedBy: CodingKeys.self)
++            self.body = try container.decodeIfPresent(FontChoice.self, forKey: .body) ?? self.body
++            self.title = try container.decodeIfPresent(FontChoice.self, forKey: .title) ?? self.title
++            self.label = try container.decodeIfPresent(FontChoice.self, forKey: .label) ?? self.label
++        }
++    }
++
++    public struct Icons: Codable, Equatable {
++        /// The size of a pixel of an icon in points. 0 keeps the icons as they are.
++        public var grid: Int = 1
++
++        public init() {
++        }
++
++        private enum CodingKeys: String, CodingKey {
++            case grid
++        }
++
++        public init(from decoder: Decoder) throws {
++            let container = try decoder.container(keyedBy: CodingKeys.self)
++            self.grid = try container.decodeIfPresent(Int.self, forKey: .grid) ?? self.grid
++        }
++    }
++
++    public struct Avatars: Codable, Equatable {
++        /// Cells on a side of the mosaic. 0 keeps the full resolution.
++        public var mosaic: Int = 24
++        public var gray: Bool = true
++
++        public init() {
++        }
++
++        private enum CodingKeys: String, CodingKey {
++            case mosaic, gray
++        }
++
++        public init(from decoder: Decoder) throws {
++            let container = try decoder.container(keyedBy: CodingKeys.self)
++            self.mosaic = try container.decodeIfPresent(Int.self, forKey: .mosaic) ?? self.mosaic
++            self.gray = try container.decodeIfPresent(Bool.self, forKey: .gray) ?? self.gray
++        }
++    }
++
++    public struct Media: Codable, Equatable {
++        /// Stickers, custom emoji and animated icons.
++        public var gray: Bool = true
++        /// The multiplier of their pixel size. 0 keeps the full resolution.
++        public var grid: Int = 1
++
++        public init() {
++        }
++
++        private enum CodingKeys: String, CodingKey {
++            case gray, grid
++        }
++
++        public init(from decoder: Decoder) throws {
++            let container = try decoder.container(keyedBy: CodingKeys.self)
++            self.gray = try container.decodeIfPresent(Bool.self, forKey: .gray) ?? self.gray
++            self.grid = try container.decodeIfPresent(Int.self, forKey: .grid) ?? self.grid
++        }
++    }
++
++    public struct Animation: Codable, Equatable {
++        /// How many values a layer jumps through per second. 0 keeps the smooth animations.
++        public var stepsPerSecond: Int = 20
++
++        public init() {
++        }
++
++        private enum CodingKeys: String, CodingKey {
++            case stepsPerSecond
++        }
++
++        public init(from decoder: Decoder) throws {
++            let container = try decoder.container(keyedBy: CodingKeys.self)
++            self.stepsPerSecond = try container.decodeIfPresent(Int.self, forKey: .stepsPerSecond) ?? self.stepsPerSecond
++        }
++    }
++
++    public struct Chat: Codable, Equatable {
++        public var dots: Bool = true
++        public var bubbleCorner: Int = 6
++
++        public init() {
++        }
++
++        private enum CodingKeys: String, CodingKey {
++            case dots, bubbleCorner
++        }
++
++        public init(from decoder: Decoder) throws {
++            let container = try decoder.container(keyedBy: CodingKeys.self)
++            self.dots = try container.decodeIfPresent(Bool.self, forKey: .dots) ?? self.dots
++            self.bubbleCorner = try container.decodeIfPresent(Int.self, forKey: .bubbleCorner) ?? self.bubbleCorner
++        }
++    }
++
++    public var format: String = AyuTheme.formatName
++    public var id: String
++    public var name: String
++    public var author: String
++    public var version: String
++    public var description: String = ""
++    public var palette = Palette()
++    public var fonts = Fonts()
++    public var icons = Icons()
++    public var avatars = Avatars()
++    public var media = Media()
++    public var animation = Animation()
++    public var chat = Chat()
++
++    public init(id: String, name: String, author: String, version: String, description: String = "") {
++        self.id = id
++        self.name = name
++        self.author = author
++        self.version = version
++        self.description = description
++    }
++
++    private enum CodingKeys: String, CodingKey {
++        case format, id, name, author, version, description, palette, fonts, icons, avatars, media, animation, chat
++    }
++
++    public init(from decoder: Decoder) throws {
++        let container = try decoder.container(keyedBy: CodingKeys.self)
++        self.format = try container.decode(String.self, forKey: .format)
++        self.id = try container.decode(String.self, forKey: .id)
++        self.name = try container.decode(String.self, forKey: .name)
++        self.author = try container.decode(String.self, forKey: .author)
++        self.version = try container.decode(String.self, forKey: .version)
++        self.description = try container.decodeIfPresent(String.self, forKey: .description) ?? ""
++        self.palette = try container.decodeIfPresent(Palette.self, forKey: .palette) ?? Palette()
++        self.fonts = try container.decodeIfPresent(Fonts.self, forKey: .fonts) ?? Fonts()
++        self.icons = try container.decodeIfPresent(Icons.self, forKey: .icons) ?? Icons()
++        self.avatars = try container.decodeIfPresent(Avatars.self, forKey: .avatars) ?? Avatars()
++        self.media = try container.decodeIfPresent(Media.self, forKey: .media) ?? Media()
++        self.animation = try container.decodeIfPresent(Animation.self, forKey: .animation) ?? Animation()
++        self.chat = try container.decodeIfPresent(Chat.self, forKey: .chat) ?? Chat()
++    }
++
++    /// The default look of the app.
++    public static let pixel = AyuTheme(id: "pixel", name: "Pixel", author: "AyuGram", version: "1.0", description: "Black and white, square, on a pixel grid.")
++
++    public static func rgb(hex: String) -> UInt32? {
++        guard hex.utf8.count == 7, hex.hasPrefix("#") else {
++            return nil
++        }
++        let digits = hex.dropFirst()
++        guard digits.allSatisfy({ $0.isHexDigit }) else {
++            return nil
++        }
++        return UInt32(digits, radix: 16)
++    }
++
++    private static func luma(_ rgb: UInt32) -> Double {
++        let red = Double((rgb >> 16) & 0xff)
++        let green = Double((rgb >> 8) & 0xff)
++        let blue = Double(rgb & 0xff)
++        return (red * 0.2126 + green * 0.7152 + blue * 0.0722) / 255.0
++    }
++
++    public func validate() throws {
++        let validID = !self.id.isEmpty && self.id.utf8.count <= 64 && self.id.unicodeScalars.allSatisfy { (97 ... 122).contains($0.value) || (48 ... 57).contains($0.value) || $0 == "_" || $0 == "-" }
++        guard self.format == AyuTheme.formatName, validID,
++              !self.name.isEmpty, self.name.count <= 64,
++              !self.author.isEmpty, self.author.count <= 128,
++              !self.version.isEmpty, self.version.count <= 32,
++              self.description.count <= 512,
++              (0 ... 4).contains(self.icons.grid),
++              self.avatars.mosaic == 0 || (8 ... 64).contains(self.avatars.mosaic),
++              (0 ... 8).contains(self.media.grid),
++              self.animation.stepsPerSecond == 0 || (5 ... 60).contains(self.animation.stepsPerSecond),
++              (2 ... 16).contains(self.chat.bubbleCorner),
++              let dark = AyuTheme.rgb(hex: self.palette.dark),
++              let light = AyuTheme.rgb(hex: self.palette.light) else {
++            throw AyuThemeError.invalidFile
++        }
++        guard AyuTheme.luma(light) - AyuTheme.luma(dark) >= 0.4 else {
++            throw AyuThemeError.unreadablePalette
++        }
++    }
++
++    public static func parse(_ data: Data) throws -> AyuTheme {
++        guard !data.isEmpty, data.count <= AyuTheme.maximumFileBytes,
++              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
++              let format = object["format"] as? String else {
++            throw AyuThemeError.invalidFile
++        }
++        if format != AyuTheme.formatName && format.hasPrefix("ayu-theme-") {
++            throw AyuThemeError.newerFormat
++        }
++        guard let theme = try? JSONDecoder().decode(AyuTheme.self, from: data) else {
++            throw AyuThemeError.invalidFile
++        }
++        try theme.validate()
++        return theme
++    }
++
++    public func export() throws -> Data {
++        try self.validate()
++        let encoder = JSONEncoder()
++        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
++        return try encoder.encode(self)
++    }
++}
++
++/// Installed themes and the active one. A change applies at the next launch: fonts, shapes and
++/// runtime hooks are set up before the first screen. The keys are also read in AppBundle.m.
++public enum AyuThemeStore {
++    private static let activeKey = "ayu.theme.active"
++    private static let stockKey = "ayu.theme.stock"
++    private static let iconGridKey = "ayu.theme.iconGrid"
++    private static let recoveredKey = "ayu.theme.recovered"
++
++    private static var directory: URL? {
++        return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?.appendingPathComponent("ayu-themes", isDirectory: true)
++    }
++
++    /// The theme of this launch; nil is the standard look of the app, as in app extensions.
++    public static func loadActive() -> AyuTheme? {
++        if Bundle.main.bundlePath.hasSuffix(".appex") {
++            return nil
++        }
++        let defaults = UserDefaults.standard
++        if defaults.bool(forKey: AyuThemeStore.stockKey) {
++            return nil
++        }
++        if let data = defaults.data(forKey: AyuThemeStore.activeKey), let theme = try? AyuTheme.parse(data) {
++            return theme
++        }
++        return AyuTheme.pixel
++    }
++
++    /// The theme the next launch uses.
++    public static var selected: AyuTheme? {
++        return AyuThemeStore.loadActive()
++    }
++
++    public static func activate(_ theme: AyuTheme?) throws {
++        let defaults = UserDefaults.standard
++        defaults.removeObject(forKey: AyuThemeStore.recoveredKey)
++        guard let theme = theme else {
++            defaults.set(true, forKey: AyuThemeStore.stockKey)
++            return
++        }
++        let data = try theme.export()
++        defaults.set(data, forKey: AyuThemeStore.activeKey)
++        defaults.set(theme.icons.grid, forKey: AyuThemeStore.iconGridKey)
++        defaults.set(false, forKey: AyuThemeStore.stockKey)
++    }
++
++    /// Whether repeated failed launches have switched the theme off.
++    public static var wasSwitchedOffAfterFailedLaunches: Bool {
++        return UserDefaults.standard.bool(forKey: AyuThemeStore.recoveredKey)
++    }
++
++    public static func installed() -> [AyuTheme] {
++        var result: [AyuTheme] = [AyuTheme.pixel]
++        guard let directory = AyuThemeStore.directory, let urls = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) else {
++            return result
++        }
++        var themes: [AyuTheme] = []
++        for url in urls where url.pathExtension == AyuTheme.fileExtension {
++            if let data = try? Data(contentsOf: url), let theme = try? AyuTheme.parse(data), theme.id != AyuTheme.pixel.id {
++                themes.append(theme)
++            }
++        }
++        result.append(contentsOf: themes.sorted(by: { $0.name.lowercased() < $1.name.lowercased() }))
++        return result
++    }
++
++    @discardableResult
++    public static func install(_ data: Data) throws -> AyuTheme {
++        let theme = try AyuTheme.parse(data)
++        guard theme.id != AyuTheme.pixel.id, let directory = AyuThemeStore.directory else {
++            throw AyuThemeError.invalidFile
++        }
++        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
++        try theme.export().write(to: directory.appendingPathComponent(theme.id).appendingPathExtension(AyuTheme.fileExtension), options: .atomic)
++        return theme
++    }
++
++    public static func remove(id: String) throws {
++        guard id != AyuTheme.pixel.id, let directory = AyuThemeStore.directory else {
++            return
++        }
++        if AyuThemeStore.selected?.id == id {
++            try AyuThemeStore.activate(AyuTheme.pixel)
++        }
++        try FileManager.default.removeItem(at: directory.appendingPathComponent(id).appendingPathExtension(AyuTheme.fileExtension))
++    }
++}
+diff --git a/submodules/Display/Source/CAAnimationUtils.swift b/submodules/Display/Source/CAAnimationUtils.swift
+index 7ec0b50..13125ed 100644
+--- a/submodules/Display/Source/CAAnimationUtils.swift
++++ b/submodules/Display/Source/CAAnimationUtils.swift
+@@ -127,10 +127,10 @@ private func ayuInterpolatedValue(from: Any, to: Any, fraction: CGFloat) -> AnyO
+ 
+ // Pixel style: the layer jumps through a few values and never overshoots. Nil keeps the regular animation.
+ private func ayuSteppedAnimation(layer: CALayer, from: Any?, to: Any, keyPath: String, isLinear: Bool, duration: Double, delay: Double, removeOnCompletion: Bool, additive: Bool, completion: ((Bool) -> Void)?) -> CAAnimation? {
+-    guard AyuPixelStyle.isEnabled, keyPath != "cornerRadius", duration > 0.0, duration <= 0.7, let from else {
++    guard AyuPixelStyle.animationStepsPerSecond > 0, keyPath != "cornerRadius", duration > 0.0, duration <= 0.7, let from else {
+         return nil
+     }
+-    let steps = max(2, min(8, Int((duration * 20.0).rounded())))
++    let steps = max(2, min(8, Int((duration * Double(AyuPixelStyle.animationStepsPerSecond)).rounded())))
+     var values: [AnyObject] = []
+     var keyTimes: [NSNumber] = [0.0]
+     for i in 1 ... steps {
+diff --git a/submodules/Display/Source/Font.swift b/submodules/Display/Source/Font.swift
+index 47067c1..71a5830 100644
+--- a/submodules/Display/Source/Font.swift
++++ b/submodules/Display/Source/Font.swift
+@@ -192,7 +192,10 @@ public struct Font {
+     }
+ 
+     private static func ayuBody(_ size: CGFloat, weight: CGFloat, italic: Bool = false, monospacedNumbers: Bool = false) -> UIFont? {
+-        return self.ayuPixelFont(name: "GolosText-Regular", size: size, weight: weight, italic: italic, monospacedNumbers: monospacedNumbers)
++        guard let name = AyuPixelStyle.theme?.fonts.body.postScriptName else {
++            return nil
++        }
++        return self.ayuPixelFont(name: name, size: size, weight: weight, italic: italic, monospacedNumbers: monospacedNumbers)
+     }
+ 
+     private static func ayuBodyWeight(_ weight: Weight) -> CGFloat {
+@@ -212,7 +215,11 @@ public struct Font {
+ 
+     // Labels, dates and counters.
+     public static func pixelLabel(_ size: CGFloat, medium: Bool = false) -> UIFont {
+-        if AyuPixelStyle.isEnabled, let font = UIFont(name: medium ? "IBMPlexMono-Medium" : "IBMPlexMono-Regular", size: size) {
++        if let choice = AyuPixelStyle.theme?.fonts.label, choice == .plex {
++            if let font = UIFont(name: medium ? "IBMPlexMono-Medium" : "IBMPlexMono-Regular", size: size) {
++                return font
++            }
++        } else if let name = AyuPixelStyle.theme?.fonts.label.postScriptName, let font = self.ayuPixelFont(name: name, size: size, weight: medium ? 500.0 : 400.0) {
+             return font
+         }
+         return medium ? self.medium(size) : self.regular(size)
+@@ -220,7 +227,10 @@ public struct Font {
+ 
+     // Handjet has a small x-height, so titles get a larger point size.
+     public static func pixelTitle(_ size: CGFloat) -> UIFont {
+-        return self.ayuPixelFont(name: "Handjet-Regular", size: floor(size * 1.4), weight: 500.0) ?? self.semibold(size)
++        guard let choice = AyuPixelStyle.theme?.fonts.title, let name = choice.postScriptName else {
++            return self.semibold(size)
++        }
++        return self.ayuPixelFont(name: name, size: choice == .handjet ? floor(size * 1.4) : size, weight: 500.0) ?? self.semibold(size)
+     }
+     
+     public static func with(size: CGFloat, design: Design = .regular, weight: Weight = .regular, width: Width = .standard, traits: Traits = []) -> UIFont {
+diff --git a/submodules/SettingsUI/Sources/AyuHostedNavigationScreen.swift b/submodules/SettingsUI/Sources/AyuHostedNavigationScreen.swift
+index 3c449cb..f95b84f 100644
+--- a/submodules/SettingsUI/Sources/AyuHostedNavigationScreen.swift
++++ b/submodules/SettingsUI/Sources/AyuHostedNavigationScreen.swift
+@@ -108,6 +108,10 @@ final class AyuHostedNavigationScreen: ViewController, AyuPluginPresentationHost
+ 
+ /// Opens the plugin list as a page; `fileURL` imports a .plugin file opened from elsewhere.
+ public func ayuImportPlugin(context: AccountContext, fileURL: URL?, filename: String?) {
++    if let fileURL, let filename, (filename as NSString).pathExtension.lowercased() == AyuTheme.fileExtension {
++        ayuImportTheme(context: context, fileURL: fileURL)
++        return
++    }
+     AyuWhiteGramRuntime.shared.configure(account: context.account.peerId.toInt64(), present: { controller in
+         context.sharedContext.applicationBindings.presentNativeController(controller)
+     })
+diff --git a/submodules/SettingsUI/Sources/AyuSettingsController.swift b/submodules/SettingsUI/Sources/AyuSettingsController.swift
+index 77143d3..5383079 100644
+--- a/submodules/SettingsUI/Sources/AyuSettingsController.swift
++++ b/submodules/SettingsUI/Sources/AyuSettingsController.swift
+@@ -20,6 +20,7 @@ private enum ExteraGramRow: Int32 {
+     case plugins
+     case materialDesign
+     case other
++    case themes
+ }
+ 
+ /// exteraGram preferences (MainPreferencesActivity): the logo header, then Categories
+@@ -44,6 +45,8 @@ public func ayuSettingsController(context: AccountContext) -> ViewController {
+             push?(ayuMaterialDesignController(context: context))
+         case .other:
+             push?(ayuOtherSettingsController(context: context, navigation: navigation?()))
++        case .themes:
++            push?(ayuThemesController(context: context))
+         }
+     }, toggle: { _, _ in })
+     let icons: [ExteraGramRow: UIImage?] = [
+@@ -52,7 +55,8 @@ public func ayuSettingsController(context: AccountContext) -> ViewController {
+         .chats: AyuSettingsIcons.glyph("AyuGram/Chats", color: UIColor(rgb: 0x34C759), side: 20.0),
+         .plugins: AyuSettingsIcons.glyph("AyuGram/Plugins", color: UIColor(rgb: 0x007AFF), side: 20.0),
+         .materialDesign: AyuSettingsIcons.symbol("switch.2", color: UIColor(rgb: 0x6750A4)),
+-        .other: AyuSettingsIcons.symbol("star.fill", color: UIColor(rgb: 0xFF9500))
++        .other: AyuSettingsIcons.symbol("star.fill", color: UIColor(rgb: 0xFF9500)),
++        .themes: AyuSettingsIcons.symbol("paintpalette.fill", color: UIColor(rgb: 0xAF52DE))
+     ]
+     let signal = context.sharedContext.presentationData
+     |> deliverOnMainQueue
+@@ -66,7 +70,8 @@ public func ayuSettingsController(context: AccountContext) -> ViewController {
+             .link(1, ExteraGramRow.chats.rawValue, icons[.chats] ?? nil, AyuStrings.chats.text(ru), ""),
+             .badgedLink(1, ExteraGramRow.plugins.rawValue, icons[.plugins] ?? nil, AyuStrings.plugins.text(ru), "ALPHA", 0xFF453A),
+             .badgedLink(1, ExteraGramRow.materialDesign.rawValue, icons[.materialDesign] ?? nil, AyuStrings.materialDesignToggle.text(ru), "ALPHA", 0xFF453A),
+-            .link(1, ExteraGramRow.other.rawValue, icons[.other] ?? nil, AyuStrings.other.text(ru), "")
++            .link(1, ExteraGramRow.other.rawValue, icons[.other] ?? nil, AyuStrings.other.text(ru), ""),
++            .link(1, ExteraGramRow.themes.rawValue, icons[.themes] ?? nil, ru ? "Темы" : "Themes", AyuThemeStore.selected?.name ?? "")
+         ]
+         let data = ItemListPresentationData(presentationData)
+         let state = ItemListControllerState(presentationData: data, title: .text(""), leftNavigationButton: nil, rightNavigationButton: nil, backNavigationButton: ItemListBackButton(title: presentationData.strings.Common_Back))
+diff --git a/submodules/SettingsUI/Sources/AyuThemesController.swift b/submodules/SettingsUI/Sources/AyuThemesController.swift
+new file mode 100644
+index 0000000..43d3a53
+--- /dev/null
++++ b/submodules/SettingsUI/Sources/AyuThemesController.swift
+@@ -0,0 +1,194 @@
++import Foundation
++import UIKit
++import UniformTypeIdentifiers
++import Display
++import SwiftSignalKit
++import TelegramPresentationData
++import PresentationDataUtils
++import ItemListUI
++import AccountContext
++
++private final class AyuThemeDocumentPickerDelegate: NSObject, UIDocumentPickerDelegate {
++    let picked: (URL) -> Void
++    private var retainedSelf: AyuThemeDocumentPickerDelegate?
++
++    init(picked: @escaping (URL) -> Void) {
++        self.picked = picked
++        super.init()
++        self.retainedSelf = self
++    }
++
++    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
++        self.retainedSelf = nil
++        if let url = urls.first {
++            self.picked(url)
++        }
++    }
++
++    func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
++        self.retainedSelf = nil
++    }
++}
++
++private func ayuThemeAlert(context: AccountContext, title: String, text: String, actions: [TextAlertAction]) {
++    context.sharedContext.mainWindow?.present(textAlertController(context: context, title: title, text: text, actions: actions, actionLayout: actions.count > 2 ? .vertical : .horizontal), on: .root)
++}
++
++private func ayuThemeRestartAlert(context: AccountContext, russian: Bool) {
++    ayuThemeAlert(context: context, title: russian ? "Тема выбрана" : "Theme selected", text: russian ? "Тема применится после перезапуска приложения." : "The theme applies when the app restarts.", actions: [
++        TextAlertAction(type: .genericAction, title: russian ? "Позже" : "Later", action: {}),
++        TextAlertAction(type: .defaultAction, title: russian ? "Закрыть приложение" : "Close the app", action: {
++            exit(0)
++        })
++    ])
++}
++
++/// Reviews a theme file and installs it. The file holds only values, which are validated here.
++public func ayuImportTheme(context: AccountContext, fileURL: URL, completed: (() -> Void)? = nil) {
++    let russian = context.sharedContext.currentPresentationData.with { $0 }.strings.baseLanguageCode.hasPrefix("ru")
++    let scoped = fileURL.startAccessingSecurityScopedResource()
++    defer {
++        if scoped {
++            fileURL.stopAccessingSecurityScopedResource()
++        }
++    }
++    let theme: AyuTheme
++    let data: Data
++    do {
++        data = try Data(contentsOf: fileURL, options: .mappedIfSafe)
++        theme = try AyuTheme.parse(data)
++    } catch {
++        ayuThemeAlert(context: context, title: russian ? "Ошибка темы" : "Theme error", text: error.localizedDescription, actions: [
++            TextAlertAction(type: .defaultAction, title: "OK", action: {})
++        ])
++        return
++    }
++    var text = theme.name + " " + theme.version + "\n" + theme.author
++    if !theme.description.isEmpty {
++        text += "\n\n" + theme.description
++    }
++    let install: (Bool) -> Void = { apply in
++        do {
++            let installed = try AyuThemeStore.install(data)
++            if apply {
++                try AyuThemeStore.activate(installed)
++                ayuThemeRestartAlert(context: context, russian: russian)
++            }
++            completed?()
++        } catch {
++            ayuThemeAlert(context: context, title: russian ? "Ошибка темы" : "Theme error", text: error.localizedDescription, actions: [
++                TextAlertAction(type: .defaultAction, title: "OK", action: {})
++            ])
++        }
++    }
++    ayuThemeAlert(context: context, title: russian ? "Установить тему?" : "Install theme?", text: text, actions: [
++        TextAlertAction(type: .defaultAction, title: russian ? "Установить и применить" : "Install and apply", action: {
++            install(true)
++        }),
++        TextAlertAction(type: .genericAction, title: russian ? "Только установить" : "Install only", action: {
++            install(false)
++        }),
++        TextAlertAction(type: .genericAction, title: russian ? "Отмена" : "Cancel", action: {})
++    ])
++}
++
++func ayuThemesController(context: AccountContext) -> ViewController {
++    let updated = ValuePromise<Int>(0, ignoreRepeated: false)
++    var version = 0
++    let reload: () -> Void = {
++        version += 1
++        updated.set(version)
++    }
++    var themes: [AyuTheme] = []
++
++    let exportTheme: (AyuTheme) -> Void = { theme in
++        guard let data = try? theme.export() else {
++            return
++        }
++        let url = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(theme.id).appendingPathExtension(AyuTheme.fileExtension)
++        guard (try? data.write(to: url, options: .atomic)) != nil else {
++            return
++        }
++        context.sharedContext.applicationBindings.presentNativeController(UIActivityViewController(activityItems: [url], applicationActivities: nil))
++    }
++
++    let arguments = AyuSectionedArguments(open: { id in
++        let russian = context.sharedContext.currentPresentationData.with { $0 }.strings.baseLanguageCode.hasPrefix("ru")
++        if id == 1 {
++            ayuThemeAlert(context: context, title: russian ? "Стандартный вид" : "Standard look", text: russian ? "Вернуть обычный вид Telegram?" : "Go back to the regular look of Telegram?", actions: [
++                TextAlertAction(type: .genericAction, title: russian ? "Отмена" : "Cancel", action: {}),
++                TextAlertAction(type: .defaultAction, title: russian ? "Вернуть" : "Go back", action: {
++                    try? AyuThemeStore.activate(nil)
++                    reload()
++                    ayuThemeRestartAlert(context: context, russian: russian)
++                })
++            ])
++        } else if id == 1000 {
++            let delegate = AyuThemeDocumentPickerDelegate(picked: { url in
++                ayuImportTheme(context: context, fileURL: url, completed: reload)
++            })
++            let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.item], asCopy: true)
++            picker.delegate = delegate
++            context.sharedContext.applicationBindings.presentNativeController(picker)
++        } else {
++            let index = Int(id) - 2
++            guard index >= 0, index < themes.count else {
++                return
++            }
++            let theme = themes[index]
++            var actions: [TextAlertAction] = [
++                TextAlertAction(type: .defaultAction, title: russian ? "Применить" : "Apply", action: {
++                    do {
++                        try AyuThemeStore.activate(theme)
++                        reload()
++                        ayuThemeRestartAlert(context: context, russian: russian)
++                    } catch {
++                        ayuThemeAlert(context: context, title: russian ? "Ошибка темы" : "Theme error", text: error.localizedDescription, actions: [
++                            TextAlertAction(type: .defaultAction, title: "OK", action: {})
++                        ])
++                    }
++                }),
++                TextAlertAction(type: .genericAction, title: russian ? "Экспортировать файл" : "Export file", action: {
++                    exportTheme(theme)
++                })
++            ]
++            if theme.id != AyuTheme.pixel.id {
++                actions.append(TextAlertAction(type: .destructiveAction, title: russian ? "Удалить" : "Delete", action: {
++                    try? AyuThemeStore.remove(id: theme.id)
++                    reload()
++                }))
++            }
++            actions.append(TextAlertAction(type: .genericAction, title: russian ? "Отмена" : "Cancel", action: {}))
++            var text = theme.author + ", " + theme.version
++            if !theme.description.isEmpty {
++                text += "\n\n" + theme.description
++            }
++            ayuThemeAlert(context: context, title: theme.name, text: text, actions: actions)
++        }
++    }, toggle: { _, _ in })
++
++    let signal = combineLatest(context.sharedContext.presentationData, updated.get())
++    |> deliverOnMainQueue
++    |> map { presentationData, _ -> (ItemListControllerState, (ItemListNodeState, Any)) in
++        let russian = presentationData.strings.baseLanguageCode.hasPrefix("ru")
++        themes = AyuThemeStore.installed()
++        let selected = AyuThemeStore.selected
++        var entries: [AyuSectionedEntry] = [
++            .header(0, 0, russian ? "Темы" : "Themes"),
++            .link(0, 1, nil, russian ? "Стандартный вид" : "Standard look", selected == nil ? "✓" : "")
++        ]
++        for (index, theme) in themes.enumerated() {
++            entries.append(.link(0, Int32(index) + 2, nil, theme.name, selected?.id == theme.id ? "✓" : ""))
++        }
++        entries.append(.link(1, 1000, nil, russian ? "Установить файл .ayutheme" : "Install .ayutheme file", ""))
++        var info = russian ? "Тема применяется после перезапуска приложения. Файл темы содержит только настройки и не может запускать код." : "A theme applies when the app restarts. A theme file holds only values and cannot run code."
++        if AyuThemeStore.wasSwitchedOffAfterFailedLaunches {
++            info = (russian ? "Тема отключена: приложение несколько раз подряд не смогло запуститься.\n\n" : "The theme was switched off: the app failed to launch several times in a row.\n\n") + info
++        }
++        entries.append(.info(1, 1001, info))
++        let data = ItemListPresentationData(presentationData)
++        let state = ItemListControllerState(presentationData: data, title: .text(russian ? "Темы" : "Themes"), leftNavigationButton: nil, rightNavigationButton: nil, backNavigationButton: ItemListBackButton(title: presentationData.strings.Common_Back))
++        return (state, (ItemListNodeState(presentationData: data, entries: entries, style: .blocks, animateChanges: false), arguments))
++    }
++    return ItemListController(context: context, state: signal)
++}
+diff --git a/submodules/TelegramPresentationData/Sources/PresentationData.swift b/submodules/TelegramPresentationData/Sources/PresentationData.swift
+index 79c9be1..c16d60f 100644
+--- a/submodules/TelegramPresentationData/Sources/PresentationData.swift
++++ b/submodules/TelegramPresentationData/Sources/PresentationData.swift
+@@ -71,7 +71,7 @@ public struct PresentationChatBubbleCorners: Equatable, Hashable {
+     public var hasTails: Bool
+     
+     public init(mainRadius: CGFloat, auxiliaryRadius: CGFloat, mergeBubbleCorners: Bool, hasTails: Bool = true) {
+-        self.mainRadius = AyuPixelStyle.isEnabled ? 6.0 : mainRadius
++        self.mainRadius = AyuPixelStyle.theme.map { CGFloat($0.chat.bubbleCorner) } ?? mainRadius
+         self.auxiliaryRadius = AyuPixelStyle.isEnabled ? 0.0 : auxiliaryRadius
+         self.mergeBubbleCorners = mergeBubbleCorners
+         self.hasTails = AyuPixelStyle.isEnabled ? false : hasTails
+diff --git a/submodules/TelegramUI/Components/GlassBackgroundComponent/Sources/GlassBackgroundComponent.swift b/submodules/TelegramUI/Components/GlassBackgroundComponent/Sources/GlassBackgroundComponent.swift
+index 68321b8..1232b73 100644
+--- a/submodules/TelegramUI/Components/GlassBackgroundComponent/Sources/GlassBackgroundComponent.swift
++++ b/submodules/TelegramUI/Components/GlassBackgroundComponent/Sources/GlassBackgroundComponent.swift
+@@ -821,11 +821,11 @@ public class GlassBackgroundView: UIView {
+                 //foregroundView.image = nil
+                 #endif
+                 if AyuPixelStyle.isEnabled {
+-                    var panelFillColor: UIColor = isDark ? .black : .white
++                    var panelFillColor: UIColor = isDark ? UIColor(rgb: 0x000000) : UIColor(rgb: 0xffffff)
+                     if case let .custom(_, color) = tintColor.kind, color.alpha > 0.01 {
+                         panelFillColor = color.withAlphaComponent(1.0)
+                     }
+-                    foregroundView.image = AyuPixelStyle.panelImage(fillColor: panelFillColor, borderColor: isDark ? .white : .black, inset: shadowInset)
++                    foregroundView.image = AyuPixelStyle.panelImage(fillColor: panelFillColor, borderColor: isDark ? UIColor(rgb: 0xffffff) : UIColor(rgb: 0x000000), inset: shadowInset)
+                 }
+                 transition.setAlpha(view: foregroundView, alpha: isVisible ? 1.0 : 0.0)
+             } else {
+diff --git a/submodules/TelegramUI/Components/TabBarComponent/Sources/TabBarComponent.swift b/submodules/TelegramUI/Components/TabBarComponent/Sources/TabBarComponent.swift
+index 8d43916..795e12d 100644
+--- a/submodules/TelegramUI/Components/TabBarComponent/Sources/TabBarComponent.swift
++++ b/submodules/TelegramUI/Components/TabBarComponent/Sources/TabBarComponent.swift
+@@ -906,7 +906,7 @@ public final class TabBarComponent: Component {
+                 let isDark = component.theme.overallDarkAppearance
+                 transition.setFrame(view: self.materialContentView, frame: CGRect(origin: CGPoint(), size: tabsSize))
+                 // Material 3 secondary container behind the selected icon: a 64 x 32 pill.
+-                self.materialIndicatorView.backgroundColor = AyuPixelStyle.isEnabled ? (isDark ? UIColor.white : UIColor.black) : (isDark ? UIColor(rgb: 0x4a4458) : UIColor(rgb: 0xe8def8))
++                self.materialIndicatorView.backgroundColor = AyuPixelStyle.isEnabled ? (isDark ? UIColor(rgb: 0xffffff) : UIColor(rgb: 0x000000)) : (isDark ? UIColor(rgb: 0x4a4458) : UIColor(rgb: 0xe8def8))
+                 if let selectedItemFrame, !(search?.isActive ?? false), !AyuPixelStyle.isEnabled || component.tintSelectedItem {
+                     let indicatorFrame = AyuPixelStyle.isEnabled ? selectedItemFrame : CGRect(x: selectedItemFrame.midX - 32.0, y: selectedItemFrame.minY + 2.0, width: 64.0, height: 32.0)
+                     transition.setFrame(view: self.materialIndicatorView, frame: indicatorFrame)
+@@ -979,9 +979,9 @@ public final class TabBarComponent: Component {
+                 self.materialBackgroundView.layer.cornerRadius = min(24.0, tabsSize.height * 0.5)
+                 if AyuPixelStyle.isEnabled {
+                     // Edge to edge with a line on top. The sides and the bottom of the border stay off screen.
+-                    self.materialBackgroundView.backgroundColor = component.theme.overallDarkAppearance ? UIColor.black : UIColor.white
++                    self.materialBackgroundView.backgroundColor = component.theme.overallDarkAppearance ? UIColor(rgb: 0x000000) : UIColor(rgb: 0xffffff)
+                     self.materialBackgroundView.layer.borderWidth = 1.0
+-                    self.materialBackgroundView.layer.borderColor = (component.theme.overallDarkAppearance ? UIColor.white : UIColor.black).cgColor
++                    self.materialBackgroundView.layer.borderColor = (component.theme.overallDarkAppearance ? UIColor(rgb: 0xffffff) : UIColor(rgb: 0x000000)).cgColor
+                     transition.setFrame(view: self.materialBackgroundView, frame: CGRect(x: -component.outerInsets.left - 1.0, y: 0.0, width: tabsSize.width + component.outerInsets.left + component.outerInsets.right + 2.0, height: tabsSize.height + component.outerInsets.bottom + 40.0))
+                 } else {
+                     transition.setFrame(view: self.materialBackgroundView, frame: CGRect(origin: CGPoint(), size: tabsSize))
+@@ -1152,7 +1152,7 @@ private final class ItemComponent: Component {
+             self.state = state
+ 
+             // The selected cell is filled with the ink color, so its content takes the ground color.
+-            let selectedColor: UIColor = AyuPixelStyle.isEnabled ? (component.theme.overallDarkAppearance ? .black : .white) : component.theme.rootController.tabBar.selectedTextColor
++            let selectedColor: UIColor = AyuPixelStyle.isEnabled ? (component.theme.overallDarkAppearance ? UIColor(rgb: 0x000000) : UIColor(rgb: 0xffffff)) : component.theme.rootController.tabBar.selectedTextColor
+             let iconTintColor = (component.isSelected && component.tintSelectedItem && !component.isSearchActive) ? selectedColor : component.theme.rootController.tabBar.textColor
+ 
+             let title: String
+diff --git a/submodules/TelegramUI/Sources/AppDelegate.swift b/submodules/TelegramUI/Sources/AppDelegate.swift
+index ed6a26a..1d2738c 100644
+--- a/submodules/TelegramUI/Sources/AppDelegate.swift
++++ b/submodules/TelegramUI/Sources/AppDelegate.swift
+@@ -3096,7 +3096,7 @@ private func extractAccountManagerState(records: AccountRecordsView<TelegramAcco
+         }
+         self.openUrlWhenReadyDisposable.set((signal
+         |> deliverOnMainQueue).start(next: { [weak self] context in
+-            if url.isFileURL, ["plugin", "iosplug"].contains(url.pathExtension.lowercased()) {
++            if url.isFileURL, ["plugin", "iosplug", "ayutheme"].contains(url.pathExtension.lowercased()) {
+                 ayuImportPlugin(context: context.context, fileURL: url, filename: url.lastPathComponent)
+             } else if (WalletContext.isTonConnectUrl(url.absoluteString) || url.scheme?.lowercased() == "ton"), !WalletConfiguration.with(appConfiguration: context.context.currentAppConfiguration.with { $0 }).isAvailable {
+                 self?.presentWalletUnavailable(in: context)
+diff --git a/submodules/TelegramUI/Sources/OpenChatMessage.swift b/submodules/TelegramUI/Sources/OpenChatMessage.swift
+index 5db7b3b..78af4da 100644
+--- a/submodules/TelegramUI/Sources/OpenChatMessage.swift
++++ b/submodules/TelegramUI/Sources/OpenChatMessage.swift
+@@ -233,7 +233,7 @@ func openChatMessageImpl(_ params: OpenChatMessageParams) -> Bool {
+             case let .document(file, immediateShare):
+                 params.dismissInput()
+                 let presentationData = params.context.sharedContext.currentPresentationData.with { $0 }
+-                if !immediateShare, let name = file.fileName, name.lowercased().hasSuffix(".plugin") || name.lowercased().hasSuffix(".iosplug") || name.lowercased().hasSuffix(".js"), !params.message.isCopyProtected(), !params.copyProtected, params.message.id.peerId.namespace != Namespaces.Peer.SecretChat {
++                if !immediateShare, let name = file.fileName, name.lowercased().hasSuffix(".plugin") || name.lowercased().hasSuffix(".iosplug") || name.lowercased().hasSuffix(".ayutheme") || name.lowercased().hasSuffix(".js"), !params.message.isCopyProtected(), !params.copyProtected, params.message.id.peerId.namespace != Namespaces.Peer.SecretChat {
+                     let _ = (params.context.engine.resources.data(resource: EngineMediaResource(file.resource))
+                     |> filter { $0.isComplete }
+                     |> take(1)
+diff --git a/submodules/WallpaperBackgroundNode/Sources/WallpaperBackgroundNode.swift b/submodules/WallpaperBackgroundNode/Sources/WallpaperBackgroundNode.swift
+index c38f43b..3aa2540 100644
+--- a/submodules/WallpaperBackgroundNode/Sources/WallpaperBackgroundNode.swift
++++ b/submodules/WallpaperBackgroundNode/Sources/WallpaperBackgroundNode.swift
+@@ -1255,7 +1255,7 @@ public final class WallpaperBackgroundNodeImpl: ASDisplayNode, WallpaperBackgrou
+         self.clipsToBounds = true
+         self.contentNode.frame = self.bounds
+         self.addSubnode(self.contentNode)
+-        if AyuPixelStyle.isEnabled {
++        if AyuPixelStyle.theme?.chat.dots == true {
+             self.ayuDotsLayer.backgroundColor = AyuPixelStyle.wallpaperDotsColor.cgColor
+             self.contentNode.layer.addSublayer(self.ayuDotsLayer)
+         }
+@@ -1817,7 +1817,7 @@ public final class WallpaperBackgroundNodeImpl: ASDisplayNode, WallpaperBackgrou
+     }
+     
+     public func updateLayout(size: CGSize, displayMode: WallpaperDisplayMode, transition: ContainedViewLayoutTransition) {
+-        if AyuPixelStyle.isEnabled {
++        if AyuPixelStyle.theme?.chat.dots == true {
+             self.ayuDotsLayer.zPosition = 1000.0
+             transition.updateFrame(layer: self.ayuDotsLayer, frame: CGRect(origin: CGPoint(), size: size))
+         }

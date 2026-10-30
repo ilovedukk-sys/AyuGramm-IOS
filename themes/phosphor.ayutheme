@@ -1,0 +1,12 @@
+{
+  "format": "ayu-theme-1",
+  "id": "phosphor",
+  "name": "Phosphor",
+  "author": "AyuGram",
+  "version": "1.0",
+  "description": "Зелёный терминал: тёмно-зелёный фон и светящийся текст.",
+  "palette": { "dark": "#001A0A", "light": "#4DFF88" },
+  "fonts": { "body": "golos", "title": "handjet", "label": "plex" },
+  "avatars": { "mosaic": 24, "gray": true },
+  "animation": { "stepsPerSecond": 20 }
+}

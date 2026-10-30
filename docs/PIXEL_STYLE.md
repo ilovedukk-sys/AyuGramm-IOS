@@ -1,6 +1,6 @@
 # Pixel style
 
-Three patches apply last, in this order: `patches/ayugram-pixel-style.patch`, `patches/ayugram-pixel-ui.patch` and `patches/ayugram-pixel-polish.patch`. `AyuPixelStyle.isEnabled` in `submodules/Display/Source/AyuPixelStyle.swift` turns the Swift side off, and `AyuPixelStyleEnabled` in `submodules/AppBundle/Sources/AppBundle/AppBundle.m` turns the Objective-C side off. Keep the two values equal. There is no setting in the app yet.
+Three patches apply last, in this order: `patches/ayugram-pixel-style.patch`, `patches/ayugram-pixel-ui.patch` and `patches/ayugram-pixel-polish.patch`. `patches/ayugram-theme-engine.patch` then makes the values of the style come from the active theme: see [THEMES.md](THEMES.md). `AyuPixelStyle.isEnabled` in `submodules/Display/Source/AyuPixelStyle.swift` is false for the standard look, and `AppBundle.m` reads the same stored values for the hooks it sets up before any Swift code runs.
 
 ## What changes
 

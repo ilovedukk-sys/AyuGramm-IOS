@@ -1,0 +1,13 @@
+{
+  "format": "ayu-theme-1",
+  "id": "soft_pixel",
+  "name": "Soft Pixel",
+  "author": "AyuGram",
+  "version": "1.0",
+  "description": "Те же квадратные формы, но цветные стикеры и аватарки, чёткие иконки и плавные анимации.",
+  "icons": { "grid": 0 },
+  "avatars": { "mosaic": 0, "gray": false },
+  "media": { "gray": false, "grid": 0 },
+  "animation": { "stepsPerSecond": 0 },
+  "chat": { "dots": false, "bubbleCorner": 8 }
+}

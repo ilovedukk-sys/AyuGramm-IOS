@@ -99,6 +99,7 @@ def main():
     sdk_sources.append(source / 'submodules/TelegramUI/Sources/AyuLyricsPauseView.swift')
     sdk_sources.append(source / 'submodules/Display/Source/AyuWhiteGramRuntime.swift')
     sdk_sources.append(source / 'submodules/Display/Source/AyuPetpetController.swift')
+    sdk_sources.append(source / 'submodules/Display/Source/AyuTheme.swift')
     sdk_sources.append(source / 'submodules/Display/Source/AyuPluginAvatar.swift')
     sdk_sources.append(source / 'submodules/Display/Source/AyuArcadeGameController.swift')
     sdk_sources.append(source / 'submodules/Display/Source/AyuChatColorPickerController.swift')

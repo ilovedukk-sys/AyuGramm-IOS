@@ -35,6 +35,7 @@ patches = [
     root / "patches" / "ayugram-pixel-style.patch",
     root / "patches" / "ayugram-pixel-ui.patch",
     root / "patches" / "ayugram-pixel-polish.patch",
+    root / "patches" / "ayugram-theme-engine.patch",
 ]
 for patch in patches:
     subprocess.run(["git", "apply", "--recount", "--check", str(patch)], cwd=source, check=True)

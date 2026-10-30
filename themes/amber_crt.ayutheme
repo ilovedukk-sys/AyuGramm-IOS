@@ -1,0 +1,15 @@
+{
+  "format": "ayu-theme-1",
+  "id": "amber_crt",
+  "name": "Amber CRT",
+  "author": "AyuGram",
+  "version": "1.0",
+  "description": "Янтарный монитор: всё в оттенках одного цвета, крупные пиксели.",
+  "palette": { "dark": "#140B00", "light": "#FFB000" },
+  "fonts": { "body": "plex", "title": "handjet", "label": "plex" },
+  "icons": { "grid": 2 },
+  "avatars": { "mosaic": 16, "gray": true },
+  "media": { "gray": true, "grid": 2 },
+  "animation": { "stepsPerSecond": 12 },
+  "chat": { "dots": true, "bubbleCorner": 4 }
+}
