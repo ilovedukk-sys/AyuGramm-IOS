@@ -578,6 +578,36 @@ index 864ed93..016dd88 100644
          titleContentRect.origin.x = min(titleContentRect.origin.x, size.width - proxyPadding - titleContentRect.width)
          
          let titleFrame = titleContentRect
+diff --git a/submodules/TelegramUI/Components/ChatTextInputMediaRecordingButton/Sources/ChatRecordingBlobKillswitch.swift b/submodules/TelegramUI/Components/ChatTextInputMediaRecordingButton/Sources/ChatRecordingBlobKillswitch.swift
+index d32d8d3..b984521 100644
+--- a/submodules/TelegramUI/Components/ChatTextInputMediaRecordingButton/Sources/ChatRecordingBlobKillswitch.swift
++++ b/submodules/TelegramUI/Components/ChatTextInputMediaRecordingButton/Sources/ChatRecordingBlobKillswitch.swift
+@@ -1,4 +1,5 @@
+ import Foundation
++import Display
+ 
+ /// The server switch that brings back the previous recording blob (`AudioBlob.VoiceBlobView`) in case the liquid
+ /// glass one misbehaves: any value under this app configuration key, as with the app's other killswitches. While it is
+@@ -8,6 +9,6 @@ enum ChatRecordingBlobKillswitch {
+ 
+     /// `appConfigurationValue` looks a key up in the app configuration.
+     static func isActive(appConfigurationValue: (String) -> Any?) -> Bool {
+-        return appConfigurationValue(ChatRecordingBlobKillswitch.appConfigurationKey) != nil
++        return AyuPixelStyle.isEnabled || appConfigurationValue(ChatRecordingBlobKillswitch.appConfigurationKey) != nil
+     }
+ }
+diff --git a/submodules/TelegramUI/Components/ChatTextInputMediaRecordingButton/Sources/ChatTextInputMediaRecordingButton.swift b/submodules/TelegramUI/Components/ChatTextInputMediaRecordingButton/Sources/ChatTextInputMediaRecordingButton.swift
+index 1b7a145..f4765f3 100644
+--- a/submodules/TelegramUI/Components/ChatTextInputMediaRecordingButton/Sources/ChatTextInputMediaRecordingButton.swift
++++ b/submodules/TelegramUI/Components/ChatTextInputMediaRecordingButton/Sources/ChatTextInputMediaRecordingButton.swift
+@@ -342,6 +342,7 @@ public final class ChatTextInputMediaRecordingButton: TGModernConversationInputM
+             )
+             blobView.setColor(theme.chat.inputPanel.actionControlFillColor)
+             blobView.hitTestSize = 110.0
++            AyuPixelStyle.applyMediaStyle(to: blobView.layer, cell: 4.0)
+             decoration = blobView
+         } else {
+             let blobView = ChatRecordingBlobView(frame: CGRect(origin: CGPoint(), size: micDecorationSize))
 diff --git a/submodules/TelegramUI/Components/EmojiTextAttachmentView/Sources/EmojiTextAttachmentView.swift b/submodules/TelegramUI/Components/EmojiTextAttachmentView/Sources/EmojiTextAttachmentView.swift
 index 7137613..d7e3997 100644
 --- a/submodules/TelegramUI/Components/EmojiTextAttachmentView/Sources/EmojiTextAttachmentView.swift
@@ -591,6 +621,117 @@ index 7137613..d7e3997 100644
          if let custom = emoji.custom {
              switch custom {
              case let .topic(id, info):
+diff --git a/submodules/TelegramUI/Components/GlassBackgroundComponent/Sources/GlassBackgroundComponent.swift b/submodules/TelegramUI/Components/GlassBackgroundComponent/Sources/GlassBackgroundComponent.swift
+index 5362cc5..68321b8 100644
+--- a/submodules/TelegramUI/Components/GlassBackgroundComponent/Sources/GlassBackgroundComponent.swift
++++ b/submodules/TelegramUI/Components/GlassBackgroundComponent/Sources/GlassBackgroundComponent.swift
+@@ -566,7 +566,7 @@ public class GlassBackgroundView: UIView {
+     
+     public private(set) var params: Params?
+         
+-    public static var useCustomGlassImpl: Bool = false
++    public static var useCustomGlassImpl: Bool = AyuPixelStyle.isEnabled
+     
+     public override init(frame: CGRect) {
+         if #available(iOS 26.0, *), !GlassBackgroundView.useCustomGlassImpl {
+diff --git a/submodules/TelegramUI/Components/GlassBackgroundComponent/Sources/TouchEffect.swift b/submodules/TelegramUI/Components/GlassBackgroundComponent/Sources/TouchEffect.swift
+index 4fd97d0..b9b4df0 100644
+--- a/submodules/TelegramUI/Components/GlassBackgroundComponent/Sources/TouchEffect.swift
++++ b/submodules/TelegramUI/Components/GlassBackgroundComponent/Sources/TouchEffect.swift
+@@ -295,6 +295,14 @@ final class TouchEffect {
+             return
+         }
+ 
++        if AyuPixelStyle.isEnabled {
++            // A press moves the content one point down at once: no lift, stretch or glow.
++            view.layer.removeAnimation(forKey: "sublayerTransform")
++            view.layer.sublayerTransform = self.state.isTracking ? CATransform3DMakeTranslation(0.0, 1.0, 0.0) : CATransform3DIdentity
++            self.appliedState = self.state
++            return
++        }
++
+         let targetTransform = self.currentTransform(for: self.state, view: view)
+ 
+         if !animated {
+diff --git a/submodules/TelegramUI/Components/LensTransition/Sources/LensTransitionContainer.swift b/submodules/TelegramUI/Components/LensTransition/Sources/LensTransitionContainer.swift
+index ddec0ed..2c98cdf 100644
+--- a/submodules/TelegramUI/Components/LensTransition/Sources/LensTransitionContainer.swift
++++ b/submodules/TelegramUI/Components/LensTransition/Sources/LensTransitionContainer.swift
+@@ -30,6 +30,9 @@ public final class LensTransitionContainer: UIView {
+     private var replacementVisibilityAssertion: AnyObject?
+ 
+     public static var isMorphSupported: Bool {
++        if AyuPixelStyle.isEnabled {
++            return false
++        }
+         if #available(iOS 26.0, *) {
+             return LiquidMorphTransition.isSupported
+         }
+@@ -173,6 +176,10 @@ public final class LensTransitionContainer: UIView {
+         }
+         // A source can disappear because the action removed it or navigation
+         // changed. In that case finish normally without constructing an invalid preview.
++        if AyuPixelStyle.isEnabled {
++            self.backgroundView.alpha = 0.0
++            self.backgroundView.layer.animateAlpha(from: 1.0, to: 0.0, duration: 0.15)
++        }
+         UIView.animate(withDuration: 0.15, animations: {
+             self.backgroundView.alpha = 0.0
+             alongsideAnimations()
+@@ -241,6 +248,12 @@ public final class LensTransitionContainer: UIView {
+     }
+ 
+     private func fadeIn(alongsideAnimations: @escaping () -> Void) {
++        if AyuPixelStyle.isEnabled {
++            self.backgroundView.alpha = 1.0
++            self.backgroundView.layer.animateAlpha(from: 0.0, to: 1.0, duration: 0.15)
++            UIView.animate(withDuration: 0.15, animations: alongsideAnimations)
++            return
++        }
+         self.backgroundView.alpha = 0.0
+         UIView.animate(withDuration: 0.2) {
+             self.backgroundView.alpha = 1.0
+diff --git a/submodules/TelegramUI/Components/LiquidLens/Sources/LiquidLensView.swift b/submodules/TelegramUI/Components/LiquidLens/Sources/LiquidLensView.swift
+index 9ab506f..73057b3 100644
+--- a/submodules/TelegramUI/Components/LiquidLens/Sources/LiquidLensView.swift
++++ b/submodules/TelegramUI/Components/LiquidLens/Sources/LiquidLensView.swift
+@@ -195,7 +195,7 @@ public final class LiquidLensView: UIView {
+         }
+         self.containerView.isUserInteractionEnabled = false
+         
+-        if #available(iOS 26.0, *) {
++        if #available(iOS 26.0, *), !AyuPixelStyle.isEnabled {
+             if let viewClass = NSClassFromString("_UILiquidLensView") as AnyObject as? NSObjectProtocol {
+                 let allocSelector = NSSelectorFromString("alloc")
+                 let initSelector = NSSelectorFromString("initWithRestingBackground:")
+@@ -422,7 +422,7 @@ public final class LiquidLensView: UIView {
+ 
+     private func update(params: Params, transition: ComponentTransition) {
+         let isFirstTime = self.params == nil
+-        let transition: ComponentTransition = isFirstTime ? .immediate : transition
++        let transition: ComponentTransition = isFirstTime ? .immediate : ((AyuPixelStyle.isEnabled && !transition.animation.isImmediate) ? .easeInOut(duration: 0.2) : transition)
+ 
+         self.params = params
+ 
+@@ -469,7 +469,8 @@ public final class LiquidLensView: UIView {
+         }
+         if let legacyContentMaskBlobView = self.legacyContentMaskBlobView, let legacyLiftedContentBlobMaskView = self.legacyLiftedContentBlobMaskView, let legacySelectionView = self.legacySelectionView {
+             let lensFrame = baseLensFrame.insetBy(dx: params.inset, dy: params.inset)
+-            let effectiveLensFrame = lensFrame.insetBy(dx: params.isLifted ? -2.0 : 0.0, dy: params.isLifted ? -2.0 : 0.0)
++            let liftedOutset: CGFloat = (params.isLifted && !AyuPixelStyle.isEnabled) ? -2.0 : 0.0
++            let effectiveLensFrame = lensFrame.insetBy(dx: liftedOutset, dy: liftedOutset)
+             
+             if legacyContentMaskBlobView.image?.size.height != lensFrame.height {
+                 legacyContentMaskBlobView.image = generateStretchableFilledCircleImage(diameter: lensFrame.height, color: .black)
+@@ -479,7 +480,7 @@ public final class LiquidLensView: UIView {
+             transition.setFrame(view: legacyContentMaskBlobView, frame: effectiveLensFrame)
+             transition.setFrame(view: legacyLiftedContentBlobMaskView, frame: effectiveLensFrame)
+             
+-            legacySelectionView.tintColor = UIColor(white: params.isDark ? 1.0 : 0.0, alpha: params.isDark ? 0.1 : 0.075)
++            legacySelectionView.tintColor = UIColor(white: params.isDark ? 1.0 : 0.0, alpha: AyuPixelStyle.isEnabled ? 0.18 : (params.isDark ? 0.1 : 0.075))
+             transition.setFrame(view: legacySelectionView, frame: effectiveLensFrame)
+         }
+ 
 diff --git a/submodules/TelegramUI/Components/LottieComponent/Sources/LottieComponent.swift b/submodules/TelegramUI/Components/LottieComponent/Sources/LottieComponent.swift
 index d620650..ca54865 100644
 --- a/submodules/TelegramUI/Components/LottieComponent/Sources/LottieComponent.swift
@@ -604,6 +745,45 @@ index d620650..ca54865 100644
              let hierarchyTrackingLayer = HierarchyTrackingLayer()
              self.hierarchyTrackingLayer = hierarchyTrackingLayer
              self.layer.addSublayer(hierarchyTrackingLayer)
+diff --git a/submodules/TelegramUI/Components/NavigationBarComponent/Sources/NavigationBarComponent.swift b/submodules/TelegramUI/Components/NavigationBarComponent/Sources/NavigationBarComponent.swift
+index a718896..e294a49 100644
+--- a/submodules/TelegramUI/Components/NavigationBarComponent/Sources/NavigationBarComponent.swift
++++ b/submodules/TelegramUI/Components/NavigationBarComponent/Sources/NavigationBarComponent.swift
+@@ -179,7 +179,7 @@ public final class NavigationBarComponent: Component {
+         }
+         /// Reduce Motion, read as each in-place change starts.
+         public var inPlaceReduceMotion: () -> Bool = {
+-            return UIAccessibility.isReduceMotionEnabled
++            return AyuPixelStyle.isEnabled || UIAccessibility.isReduceMotionEnabled
+         }
+ 
+         /// While a navigation transition draws this bar's glass above both screens: the capsules are out of the
+diff --git a/submodules/TelegramUI/Components/NavigationBarComponent/Sources/NavigationBarGlassAnimation.swift b/submodules/TelegramUI/Components/NavigationBarComponent/Sources/NavigationBarGlassAnimation.swift
+index d01fad2..9cf0d51 100644
+--- a/submodules/TelegramUI/Components/NavigationBarComponent/Sources/NavigationBarGlassAnimation.swift
++++ b/submodules/TelegramUI/Components/NavigationBarComponent/Sources/NavigationBarGlassAnimation.swift
+@@ -49,7 +49,7 @@ enum NavigationBarGlassSettings {
+     /// its partner's (so away from the platter it collapses into, and onward for one growing out of it), out on
+     /// `kickOffset` after `kickOffsetDelay`, back to 0 on `kickReturn` after `kickReturnDelay`, both issued as the shape
+     /// starts moving.
+-    static let kickFactor: CGFloat = 6.0
++    static let kickFactor: CGFloat = AyuPixelStyle.isEnabled ? 1000.0 : 6.0
+     static let kickOffset = NavigationTransitionSpring(duration: 0.25, bounce: 0.0)
+     static let kickOffsetDelay: Double = 0.05
+     static let kickReturn = NavigationTransitionSpring(duration: 0.5, bounce: 0.166)
+diff --git a/submodules/TelegramUI/Components/NavigationBarComponent/Sources/NavigationBarPlatterTransitionView.swift b/submodules/TelegramUI/Components/NavigationBarComponent/Sources/NavigationBarPlatterTransitionView.swift
+index d1bce5f..a2b46b6 100644
+--- a/submodules/TelegramUI/Components/NavigationBarComponent/Sources/NavigationBarPlatterTransitionView.swift
++++ b/submodules/TelegramUI/Components/NavigationBarComponent/Sources/NavigationBarPlatterTransitionView.swift
+@@ -343,7 +343,7 @@ public final class NavigationBarPlatterTransitionView: UIView {
+     }
+     /// Reduce Motion, read as each animation starts.
+     public var isReduceMotionEnabled: () -> Bool = {
+-        return UIAccessibility.isReduceMotionEnabled
++        return AyuPixelStyle.isEnabled || UIAccessibility.isReduceMotionEnabled
+     }
+     private var motion: NavigationBarGlassMotion {
+         return NavigationBarGlassMotion(reduce: self.isReduceMotionEnabled())
 diff --git a/submodules/TelegramUI/Components/Stories/StoryPeerListComponent/Sources/StoryPeerListComponent.swift b/submodules/TelegramUI/Components/Stories/StoryPeerListComponent/Sources/StoryPeerListComponent.swift
 index eef8659..3708e84 100644
 --- a/submodules/TelegramUI/Components/Stories/StoryPeerListComponent/Sources/StoryPeerListComponent.swift
@@ -639,9 +819,18 @@ index 29679f0..122761a 100644
          let centred = (containerWidth - contentWidth) * 0.5
          let balanced = (lowerBound + upperBound - contentWidth) * 0.5
 diff --git a/submodules/TelegramUI/Components/TabBarComponent/Sources/TabBarComponent.swift b/submodules/TelegramUI/Components/TabBarComponent/Sources/TabBarComponent.swift
-index 0188683..0153824 100644
+index 0188683..8d43916 100644
 --- a/submodules/TelegramUI/Components/TabBarComponent/Sources/TabBarComponent.swift
 +++ b/submodules/TelegramUI/Components/TabBarComponent/Sources/TabBarComponent.swift
+@@ -855,7 +855,7 @@ public final class TabBarComponent: Component {
+                     itemTransition.setFrame(view: itemComponentView, frame: itemFrame)
+                     itemTransition.setPosition(view: selectedItemComponentView, position: itemFrame.center)
+                     itemTransition.setBounds(view: selectedItemComponentView, bounds: CGRect(origin: CGPoint(), size: itemFrame.size))
+-                    itemTransition.setScale(view: selectedItemComponentView, scale: (self.selectionGestureState != nil && component.isLiftedStateEnabled) ? 1.15 : 1.0)
++                    itemTransition.setScale(view: selectedItemComponentView, scale: (self.selectionGestureState != nil && component.isLiftedStateEnabled && !AyuPixelStyle.isEnabled) ? 1.15 : 1.0)
+                     
+                     if let previousComponent, previousComponent.selectedId != item.id, isItemSelected {
+                         itemComponentView.playSelectionAnimation()
 @@ -907,7 +907,7 @@ public final class TabBarComponent: Component {
                  transition.setFrame(view: self.materialContentView, frame: CGRect(origin: CGPoint(), size: tabsSize))
                  // Material 3 secondary container behind the selected icon: a 64 x 32 pill.

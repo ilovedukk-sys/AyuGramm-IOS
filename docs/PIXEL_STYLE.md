@@ -22,9 +22,11 @@ Three patches apply last, in this order: `patches/ayugram-pixel-style.patch`, `p
 - **Reactions:** square chips with a one point outline, filled when selected, with a mono counter and no separate colors for star reactions. The selection fills in steps. The reaction menu has no blurred shadow.
 - **Stickers, custom emoji, Lottie:** `AyuPixelStyle.applyMediaStyle` makes the layer gray with a grayscale layer filter and rasterizes it on a grid of one point, or two points from 100 pt. This covers stickers in chats, reaction icons and effects, and `LottieComponent`.
 - **Animations:** `CALayer.animate` and `animateSpring` jump through two to eight values without overshoot. Animations longer than 0.7 s, those with `kCAMediaTimingFunctionSpring`, `cornerRadius`, and direct `makeAnimation` callers stay smooth, so the navigation stack and the input panel stay in step with the keyboard.
+- **Liquid Glass motion:** the custom glass path is the default, so no panel uses `UIGlassEffect`. `LiquidLensView` never creates `_UILiquidLensView`: selections are flat gray blocks that jump. Context menus do not use the UIKit morph. A press moves the content one point down instead of lifting and stretching it. Navigation bar capsules take the Reduce Motion path, whatever the system setting is. The voice recording button shows `VoiceBlobView` on a four point grid instead of the Metal blob.
 
 ## Not done
 
+- `CallStatusBarWavesLayer` still draws its Metal waves in the call status bar, and the selected tab keeps a slide on the Reduce Motion spring where a screen animates it with `.spring`.
 - The settings profile keeps its stock layout. The chat list title stays 34 pt, not the 64 pt of the mockup, because the navigation bar keeps its height.
 - Photos, videos, the sticker and emoji pickers, and `AnimationNode` animations keep their colors.
 - Shapes drawn directly with `fillEllipse`, `addArc` or `CGPath` stay round.
@@ -55,7 +57,9 @@ The third patch has not been compiled or run yet.
 12. Reactions: selected and unselected chips, counters and star reactions are readable in incoming and outgoing bubbles, on stickers, and in both themes. Long press still opens the reaction menu.
 13. Stepped animations: menus, alerts and fades finish in the right state and call their completions. Nothing stays half hidden.
 14. Stickers and custom emoji stay gray and pixelated while they play, and scrolling a chat full of them stays smooth.
-15. The chat list title does not cover the left button, the proxy or lock icons, or the story avatars.
+15. Liquid Glass: on iOS 26 and later, folder tabs, the attachment panel, the emoji panel, camera modes and context menus show no glass, lens or morph. Menus open and close from every source, and a press on any panel springs back to its place.
+16. Voice recording: the blob reacts to the microphone, moves when locked, and the mic button works as before.
+17. The chat list title does not cover the left button, the proxy or lock icons, or the story avatars.
 
 ## Fonts
 
