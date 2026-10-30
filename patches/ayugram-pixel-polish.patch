@@ -1,0 +1,634 @@
+diff --git a/submodules/AnimatedAvatarSetNode/Sources/AnimatedAvatarSetNode.swift b/submodules/AnimatedAvatarSetNode/Sources/AnimatedAvatarSetNode.swift
+index e247406..7f10ad1 100644
+--- a/submodules/AnimatedAvatarSetNode/Sources/AnimatedAvatarSetNode.swift
++++ b/submodules/AnimatedAvatarSetNode/Sources/AnimatedAvatarSetNode.swift
+@@ -98,7 +98,7 @@ private final class ContentNode: ASDisplayNode {
+                 let image = generateImage(size, rotatedContext: { size, context in
+                     context.clear(CGRect(origin: CGPoint(), size: size))
+                     context.setFillColor(UIColor.lightGray.cgColor)
+-                    context.fillEllipse(in: CGRect(origin: CGPoint(), size: size))
++                    AyuPixelStyle.fillEllipse(context, in: CGRect(origin: CGPoint(), size: size))
+                 })!
+                 self.updateImage(image: image, size: size, spacing: spacing)
+ 
+@@ -124,7 +124,7 @@ private final class ContentNode: ASDisplayNode {
+             let image = generateImage(size, rotatedContext: { size, context in
+                 context.clear(CGRect(origin: CGPoint(), size: size))
+                 context.setFillColor(placeholderColor.cgColor)
+-                context.fillEllipse(in: CGRect(origin: CGPoint(), size: size))
++                AyuPixelStyle.fillEllipse(context, in: CGRect(origin: CGPoint(), size: size))
+             })!
+             self.updateImage(image: image, size: size, spacing: spacing)
+         }
+@@ -144,7 +144,7 @@ private final class ContentNode: ASDisplayNode {
+             
+             context.setBlendMode(.copy)
+             context.setFillColor(UIColor.clear.cgColor)
+-            context.fillEllipse(in: CGRect(origin: CGPoint(), size: size).insetBy(dx: -1.5, dy: -1.5).offsetBy(dx: spacing - size.width, dy: 0.0))
++            AyuPixelStyle.fillEllipse(context, in: CGRect(origin: CGPoint(), size: size).insetBy(dx: -1.5, dy: -1.5).offsetBy(dx: spacing - size.width, dy: 0.0))
+         })
+     }
+     
+@@ -338,7 +338,7 @@ public final class AnimatedAvatarSetView: UIView {
+                     let image = generateImage(size, rotatedContext: { size, context in
+                         context.clear(CGRect(origin: CGPoint(), size: size))
+                         context.setFillColor(UIColor.lightGray.cgColor)
+-                        context.fillEllipse(in: CGRect(origin: CGPoint(), size: size))
++                        AyuPixelStyle.fillEllipse(context, in: CGRect(origin: CGPoint(), size: size))
+                     })!
+                     self.updateImage(image: image, size: size, spacing: spacing)
+ 
+@@ -364,7 +364,7 @@ public final class AnimatedAvatarSetView: UIView {
+                 let image = generateImage(size, rotatedContext: { size, context in
+                     context.clear(CGRect(origin: CGPoint(), size: size))
+                     context.setFillColor(placeholderColor.cgColor)
+-                    context.fillEllipse(in: CGRect(origin: CGPoint(), size: size))
++                    AyuPixelStyle.fillEllipse(context, in: CGRect(origin: CGPoint(), size: size))
+                 })!
+                 self.updateImage(image: image, size: size, spacing: spacing)
+             }
+@@ -388,7 +388,7 @@ public final class AnimatedAvatarSetView: UIView {
+                 
+                 context.setBlendMode(.copy)
+                 context.setFillColor(UIColor.clear.cgColor)
+-                context.fillEllipse(in: CGRect(origin: CGPoint(), size: size).insetBy(dx: -1.5, dy: -1.5).offsetBy(dx: spacing - size.width, dy: 0.0))
++                AyuPixelStyle.fillEllipse(context, in: CGRect(origin: CGPoint(), size: size).insetBy(dx: -1.5, dy: -1.5).offsetBy(dx: spacing - size.width, dy: 0.0))
+             })
+         }
+         
+diff --git a/submodules/AnimatedStickerNode/Sources/AnimatedStickerNode.swift b/submodules/AnimatedStickerNode/Sources/AnimatedStickerNode.swift
+index 8f57baf..a66333e 100644
+--- a/submodules/AnimatedStickerNode/Sources/AnimatedStickerNode.swift
++++ b/submodules/AnimatedStickerNode/Sources/AnimatedStickerNode.swift
+@@ -332,6 +332,10 @@ public final class DefaultAnimatedStickerNodeImpl: ASDisplayNode, AnimatedSticke
+         }
+         self.nodeToCopyFrameFrom = nil
+         self.addSubnode(self.renderer!.renderer)
++
++        if !self.useMetalCache {
++            AyuPixelStyle.applyMediaStyle(to: self.layer, cell: AyuPixelStyle.mediaCell(size: self.size ?? self.bounds.size))
++        }
+     }
+     
+     public func cloneCurrentFrame(from otherNode: AnimatedStickerNode?) {
+@@ -846,6 +850,9 @@ public final class DefaultAnimatedStickerNodeImpl: ASDisplayNode, AnimatedSticke
+     public func updateLayout(size: CGSize) {
+         self.size = size
+         self.renderer?.renderer.frame = CGRect(origin: CGPoint(), size: size)
++        if self.isNodeLoaded && !self.useMetalCache {
++            AyuPixelStyle.applyMediaStyle(to: self.layer, cell: AyuPixelStyle.mediaCell(size: size))
++        }
+     }
+     
+     public func setOverlayColor(_ color: UIColor?, replace: Bool, animated: Bool) {
+diff --git a/submodules/Components/ReactionButtonListComponent/Sources/ReactionButtonListComponent.swift b/submodules/Components/ReactionButtonListComponent/Sources/ReactionButtonListComponent.swift
+index 36cb9da..5e913f7 100644
+--- a/submodules/Components/ReactionButtonListComponent/Sources/ReactionButtonListComponent.swift
++++ b/submodules/Components/ReactionButtonListComponent/Sources/ReactionButtonListComponent.swift
+@@ -17,6 +17,8 @@ import TextFormat
+ import AppBundle
+ import AnimatedTextComponent
+ 
++private let reactionCounterFont: UIFont = AyuPixelStyle.isEnabled ? Font.pixelLabel(11.0, medium: true) : Font.medium(11.0)
++
+ private let tagImage: UIImage? = {
+     return generateTintedImage(image: UIImage(bundleImageName: "Chat/Message/ReactionTagBackground"), color: .white)?.stretchableImage(withLeftCapWidth: 8, topCapHeight: 15)
+ }()
+@@ -499,7 +501,7 @@ public final class ReactionButtonAsyncNode: ContextControllerSourceView {
+             var fixedTransitionDirection: Bool?
+             if let animationState, animationState.fromCounter != nil {
+                 animationFraction = max(0.0, min(1.0, (CACurrentMediaTime() - animationState.startTime) / animationState.duration))
+-                animationFraction = animationState.curve.solve(at: animationFraction)
++                animationFraction = AyuPixelStyle.steppedFraction(animationState.curve.solve(at: animationFraction))
+                 if animationState.fromExtracted != isExtracted {
+                     fixedTransitionDirection = isExtracted
+                 }
+@@ -552,9 +554,18 @@ public final class ReactionButtonAsyncNode: ContextControllerSourceView {
+                                 
+                                 context.setBlendMode(.destinationIn)
+                                 context.setFillColor(UIColor(white: 1.0, alpha: 0.5).cgColor)
+-                                context.fillEllipse(in: CGRect(origin: CGPoint(x: rect.width - 6.0 - 6.0, y: floor((rect.height - 6.0) * 0.5)), size: CGSize(width: 6.0, height: 6.0)))
++                                AyuPixelStyle.fillEllipse(context, in: CGRect(origin: CGPoint(x: rect.width - 6.0 - 6.0, y: floor((rect.height - 6.0) * 0.5)), size: CGSize(width: 6.0, height: 6.0)))
+                                 context.setBlendMode(.copy)
+                             }
++                        } else if AyuPixelStyle.isEnabled {
++                            let rect = CGRect(origin: CGPoint(), size: size)
++                            context.setFillColor(backgroundColor.cgColor)
++                            context.fill(rect)
++                            if !isExtracted && !colors.isSelected {
++                                context.setStrokeColor(foregroundColor.cgColor)
++                                context.setLineWidth(1.0)
++                                context.stroke(rect.insetBy(dx: 0.5, dy: 0.5))
++                            }
+                         } else {
+                             context.setFillColor(backgroundColor.cgColor)
+                             context.fillEllipse(in: CGRect(origin: CGPoint(), size: CGSize(width: size.height, height: size.height)))
+@@ -596,7 +607,7 @@ public final class ReactionButtonAsyncNode: ContextControllerSourceView {
+                                     let adjustedDuration = animationState.duration * durationCompression
+                                     
+                                     componentAnimationFraction = max(0.0, min(1.0, (CACurrentMediaTime() - animationState.startTime) / adjustedDuration))
+-                                    componentAnimationFraction = animationState.curve.solve(at: componentAnimationFraction)
++                                    componentAnimationFraction = AyuPixelStyle.steppedFraction(animationState.curve.solve(at: componentAnimationFraction))
+                                     
+                                     if i < fromCounterComponents.count {
+                                         let previousComponent = fromCounterComponents[i]
+@@ -627,7 +638,7 @@ public final class ReactionButtonAsyncNode: ContextControllerSourceView {
+                                             } else {
+                                                 previousColor = foregroundColor.withMultipliedAlpha(previousComponentAlpha)
+                                             }
+-                                            let string = NSAttributedString(string: previousComponent.string, font: Font.medium(11.0), textColor: previousColor)
++                                            let string = NSAttributedString(string: previousComponent.string, font: reactionCounterFont, textColor: previousColor)
+                                             string.draw(at: previousComponent.bounds.origin.offsetBy(dx: componentOrigin, dy: floorToScreenPixels(size.height - previousComponent.bounds.height) / 2.0 + previousComponentVerticalOffset))
+                                         }
+                                     } else {
+@@ -648,7 +659,7 @@ public final class ReactionButtonAsyncNode: ContextControllerSourceView {
+                                 } else {
+                                     currentColor = foregroundColor.withMultipliedAlpha(componentAlpha)
+                                 }
+-                                let string = NSAttributedString(string: component.string, font: Font.medium(11.0), textColor: currentColor)
++                                let string = NSAttributedString(string: component.string, font: reactionCounterFont, textColor: currentColor)
+                                 string.draw(at: component.bounds.origin.offsetBy(dx: componentOrigin, dy: floorToScreenPixels(size.height - component.bounds.height) / 2.0 + componentVerticalOffset))
+                                 
+                                 leftTextOrigin += component.bounds.width
+@@ -664,13 +675,13 @@ public final class ReactionButtonAsyncNode: ContextControllerSourceView {
+                             if !layout.colors.isSelected {
+                                 animationFraction = 1.0 - animationFraction
+                             }
+-                            animationFraction = animationState.curve.solve(at: animationFraction)
++                            animationFraction = AyuPixelStyle.steppedFraction(animationState.curve.solve(at: animationFraction))
+                             
+                             let center = CGPoint(x: 21.0, y: size.height / 2.0)
+                             let diameter = 0.0 * (1.0 - animationFraction) + (size.width - center.x) * 2.0 * animationFraction
+                             
+                             context.beginPath()
+-                            context.addEllipse(in: CGRect(origin: CGPoint(x: center.x - diameter / 2.0, y: center.y - diameter / 2.0), size: CGSize(width: diameter, height: diameter)))
++                            AyuPixelStyle.addEllipse(context, in: CGRect(origin: CGPoint(x: center.x - diameter / 2.0, y: center.y - diameter / 2.0), size: CGSize(width: diameter, height: diameter)))
+                             context.clip(using: .evenOdd)
+                             drawContents(colors: layout.colors.isSelected ? layout.colors : animationState.fromColors)
+                             
+@@ -678,7 +689,7 @@ public final class ReactionButtonAsyncNode: ContextControllerSourceView {
+                             
+                             context.beginPath()
+                             context.addRect(CGRect(origin: CGPoint(), size: size))
+-                            context.addEllipse(in: CGRect(origin: CGPoint(x: center.x - diameter / 2.0, y: center.y - diameter / 2.0), size: CGSize(width: diameter, height: diameter)))
++                            AyuPixelStyle.addEllipse(context, in: CGRect(origin: CGPoint(x: center.x - diameter / 2.0, y: center.y - diameter / 2.0), size: CGSize(width: diameter, height: diameter)))
+                             context.clip(using: .evenOdd)
+                             drawContents(colors: layout.colors.isSelected ? animationState.fromColors : layout.colors)
+                         } else {
+@@ -718,7 +729,7 @@ public final class ReactionButtonAsyncNode: ContextControllerSourceView {
+         private static let maxDigitWidth: CGFloat = {
+             var maxWidth: CGFloat = 0.0
+             for i in 0 ... 9 {
+-                let string = NSAttributedString(string: "\(i)", font: Font.medium(11.0), textColor: .black)
++                let string = NSAttributedString(string: "\(i)", font: reactionCounterFont, textColor: .black)
+                 let boundingRect = string.boundingRect(with: CGSize(width: 100.0, height: 100.0), options: .usesLineFragmentOrigin, context: nil)
+                 maxWidth = max(maxWidth, boundingRect.width)
+             }
+@@ -751,7 +762,7 @@ public final class ReactionButtonAsyncNode: ContextControllerSourceView {
+                 for i in 0 ..< spec.stringComponents.count {
+                     let component = spec.stringComponents[i]
+                     
+-                    let string = NSAttributedString(string: component, font: Font.medium(11.0), textColor: .black)
++                    let string = NSAttributedString(string: component, font: reactionCounterFont, textColor: .black)
+                     let boundingRect = string.boundingRect(with: CGSize(width: 100.0, height: 100.0), options: .usesLineFragmentOrigin, context: nil)
+                     
+                     resultComponents.append(Component(string: component, bounds: boundingRect))
+@@ -1401,10 +1412,10 @@ public final class ReactionButtonComponent: Equatable {
+             self.deselectedForeground = deselectedForeground
+             self.selectedForeground = selectedForeground
+             self.selectedIconTintColor = selectedIconTintColor
+-            self.deselectedStarsBackground = deselectedStarsBackground
+-            self.selectedStarsBackground = selectedStarsBackground
+-            self.deselectedStarsForeground = deselectedStarsForeground
+-            self.selectedStarsForeground = selectedStarsForeground
++            self.deselectedStarsBackground = AyuPixelStyle.isEnabled ? deselectedBackground : deselectedStarsBackground
++            self.selectedStarsBackground = AyuPixelStyle.isEnabled ? selectedBackground : selectedStarsBackground
++            self.deselectedStarsForeground = AyuPixelStyle.isEnabled ? deselectedForeground : deselectedStarsForeground
++            self.selectedStarsForeground = AyuPixelStyle.isEnabled ? selectedForeground : selectedStarsForeground
+             self.extractedBackground = extractedBackground
+             self.extractedForeground = extractedForeground
+             self.extractedSelectedForeground = extractedSelectedForeground
+diff --git a/submodules/Display/Source/AyuPixelStyle.swift b/submodules/Display/Source/AyuPixelStyle.swift
+index fec6db6..efaf016 100644
+--- a/submodules/Display/Source/AyuPixelStyle.swift
++++ b/submodules/Display/Source/AyuPixelStyle.swift
+@@ -1,5 +1,6 @@
+ import Foundation
+ import UIKit
++import UIKitRuntimeUtils
+ 
+ // Monochrome pixel look. Every change of the style checks this one switch.
+ public enum AyuPixelStyle {
+@@ -43,6 +44,43 @@ public enum AyuPixelStyle {
+         }
+     }
+ 
++    // Stickers, custom emoji and Lottie animations: gray, on a grid of `cell` points.
++    public static func applyMediaStyle(to layer: CALayer, cell: CGFloat = 1.0) {
++        guard self.isEnabled else {
++            return
++        }
++        if layer.filters == nil, let filter = makeGrayscaleFilter() {
++            layer.filters = [filter]
++        }
++        layer.magnificationFilter = .nearest
++        layer.rasterizationScale = 1.0 / cell
++        layer.shouldRasterize = true
++    }
++
++    public static func mediaCell(size: CGSize) -> CGFloat {
++        return max(size.width, size.height) >= 100.0 ? 2.0 : 1.0
++    }
++
++    public static func steppedFraction(_ value: CGFloat, steps: CGFloat = 5.0) -> CGFloat {
++        guard self.isEnabled else {
++            return value
++        }
++        return ceil(value * steps) / steps
++    }
++
++    // Capitals in every attribute run, so that fonts and custom emoji stay in place.
++    public static func uppercased(_ string: NSAttributedString) -> NSAttributedString {
++        guard self.isEnabled else {
++            return string
++        }
++        let result = NSMutableAttributedString(attributedString: string)
++        let text = string.string as NSString
++        string.enumerateAttributes(in: NSRange(location: 0, length: string.length), options: .reverse, using: { attributes, range, _ in
++            result.replaceCharacters(in: range, with: NSAttributedString(string: text.substring(with: range).uppercased(), attributes: attributes))
++        })
++        return result
++    }
++
+     // A gray mosaic of the image, used for avatars.
+     public static func avatarMosaic(_ image: UIImage) -> UIImage? {
+         guard self.isEnabled else {
+diff --git a/submodules/Display/Source/CAAnimationUtils.swift b/submodules/Display/Source/CAAnimationUtils.swift
+index 613de4e..7ec0b50 100644
+--- a/submodules/Display/Source/CAAnimationUtils.swift
++++ b/submodules/Display/Source/CAAnimationUtils.swift
+@@ -68,6 +68,107 @@ private func adjustFrameRate(animation: CAAnimation) {
+     }
+ }
+ 
++private let ayuPointType = String(cString: NSValue(cgPoint: CGPoint()).objCType)
++private let ayuSizeType = String(cString: NSValue(cgSize: CGSize()).objCType)
++private let ayuRectType = String(cString: NSValue(cgRect: CGRect()).objCType)
++private let ayuTransformType = String(cString: NSValue(caTransform3D: CATransform3DIdentity).objCType)
++
++private func ayuMix(_ from: CGFloat, _ to: CGFloat, _ fraction: CGFloat) -> CGFloat {
++    return from + (to - from) * fraction
++}
++
++private func ayuInterpolatedValue(from: Any, to: Any, fraction: CGFloat) -> AnyObject? {
++    if let from = from as? NSNumber, let to = to as? NSNumber {
++        return NSNumber(value: from.doubleValue + (to.doubleValue - from.doubleValue) * Double(fraction))
++    }
++    guard let from = from as? NSValue, let to = to as? NSValue else {
++        return nil
++    }
++    let type = String(cString: from.objCType)
++    if type != String(cString: to.objCType) {
++        return nil
++    }
++    if type == ayuPointType {
++        let a = from.cgPointValue
++        let b = to.cgPointValue
++        return NSValue(cgPoint: CGPoint(x: ayuMix(a.x, b.x, fraction), y: ayuMix(a.y, b.y, fraction)))
++    } else if type == ayuSizeType {
++        let a = from.cgSizeValue
++        let b = to.cgSizeValue
++        return NSValue(cgSize: CGSize(width: ayuMix(a.width, b.width, fraction), height: ayuMix(a.height, b.height, fraction)))
++    } else if type == ayuRectType {
++        let a = from.cgRectValue
++        let b = to.cgRectValue
++        return NSValue(cgRect: CGRect(x: ayuMix(a.minX, b.minX, fraction), y: ayuMix(a.minY, b.minY, fraction), width: ayuMix(a.width, b.width, fraction), height: ayuMix(a.height, b.height, fraction)))
++    } else if type == ayuTransformType {
++        let a = from.caTransform3DValue
++        let b = to.caTransform3DValue
++        var result = CATransform3DIdentity
++        result.m11 = ayuMix(a.m11, b.m11, fraction)
++        result.m12 = ayuMix(a.m12, b.m12, fraction)
++        result.m13 = ayuMix(a.m13, b.m13, fraction)
++        result.m14 = ayuMix(a.m14, b.m14, fraction)
++        result.m21 = ayuMix(a.m21, b.m21, fraction)
++        result.m22 = ayuMix(a.m22, b.m22, fraction)
++        result.m23 = ayuMix(a.m23, b.m23, fraction)
++        result.m24 = ayuMix(a.m24, b.m24, fraction)
++        result.m31 = ayuMix(a.m31, b.m31, fraction)
++        result.m32 = ayuMix(a.m32, b.m32, fraction)
++        result.m33 = ayuMix(a.m33, b.m33, fraction)
++        result.m34 = ayuMix(a.m34, b.m34, fraction)
++        result.m41 = ayuMix(a.m41, b.m41, fraction)
++        result.m42 = ayuMix(a.m42, b.m42, fraction)
++        result.m43 = ayuMix(a.m43, b.m43, fraction)
++        result.m44 = ayuMix(a.m44, b.m44, fraction)
++        return NSValue(caTransform3D: result)
++    }
++    return nil
++}
++
++// Pixel style: the layer jumps through a few values and never overshoots. Nil keeps the regular animation.
++private func ayuSteppedAnimation(layer: CALayer, from: Any?, to: Any, keyPath: String, isLinear: Bool, duration: Double, delay: Double, removeOnCompletion: Bool, additive: Bool, completion: ((Bool) -> Void)?) -> CAAnimation? {
++    guard AyuPixelStyle.isEnabled, keyPath != "cornerRadius", duration > 0.0, duration <= 0.7, let from else {
++        return nil
++    }
++    let steps = max(2, min(8, Int((duration * 20.0).rounded())))
++    var values: [AnyObject] = []
++    var keyTimes: [NSNumber] = [0.0]
++    for i in 1 ... steps {
++        let time = CGFloat(i) / CGFloat(steps)
++        let inverse = 1.0 - time
++        guard let value = ayuInterpolatedValue(from: from, to: to, fraction: isLinear ? time : (1.0 - inverse * inverse * inverse)) else {
++            return nil
++        }
++        values.append(value)
++        keyTimes.append(NSNumber(value: Double(time)))
++    }
++
++    let k = Float(UIView.animationDurationFactor())
++    var speed: Float = 1.0
++    if k != 0 && k != 1 {
++        speed = Float(1.0) / k
++    }
++
++    let animation = CAKeyframeAnimation(keyPath: keyPath)
++    animation.values = values
++    animation.keyTimes = keyTimes
++    animation.calculationMode = .discrete
++    animation.duration = duration
++    animation.isRemovedOnCompletion = removeOnCompletion
++    animation.fillMode = .forwards
++    animation.speed = speed
++    animation.isAdditive = additive
++    if let completion = completion {
++        animation.delegate = CALayerAnimationDelegate(animation: animation, completion: completion)
++    }
++    if !delay.isZero {
++        animation.beginTime = layer.convertTime(CACurrentMediaTime(), from: nil) + delay * UIView.animationDurationFactor()
++        animation.fillMode = .both
++    }
++    adjustFrameRate(animation: animation)
++    return animation
++}
++
+ public extension CALayer {
+     func makeAnimation(from: Any?, to: Any, keyPath: String, timingFunction: String, duration: Double, delay: Double = 0.0, mediaTimingFunction: CAMediaTimingFunction? = nil, removeOnCompletion: Bool = true, additive: Bool = false, completion: ((Bool) -> Void)? = nil) -> CAAnimation {
+         if timingFunction.hasPrefix(kCAMediaTimingFunctionCustomSpringPrefix) {
+@@ -244,6 +345,11 @@ public extension CALayer {
+     }
+     
+     func animate(from: Any?, to: Any, keyPath: String, timingFunction: String, duration: Double, delay: Double = 0.0, mediaTimingFunction: CAMediaTimingFunction? = nil, removeOnCompletion: Bool = true, additive: Bool = false, completion: ((Bool) -> Void)? = nil, key: String? = nil) {
++        // Regular springs stay: they follow the keyboard and the navigation stack.
++        if timingFunction != kCAMediaTimingFunctionSpring, let animation = ayuSteppedAnimation(layer: self, from: from, to: to, keyPath: keyPath, isLinear: timingFunction == CAMediaTimingFunctionName.linear.rawValue, duration: duration, delay: delay, removeOnCompletion: removeOnCompletion, additive: additive, completion: completion) {
++            self.add(animation, forKey: key ?? (additive ? nil : keyPath))
++            return
++        }
+         let animation = self.makeAnimation(from: from, to: to, keyPath: keyPath, timingFunction: timingFunction, duration: duration, delay: delay, mediaTimingFunction: mediaTimingFunction, removeOnCompletion: removeOnCompletion, additive: additive, completion: completion)
+         self.add(animation, forKey: key ?? (additive ? nil : keyPath))
+     }
+@@ -336,6 +442,10 @@ public extension CALayer {
+     }
+ 
+     func animateSpring(from: Any, to: Any, keyPath: String, duration: Double, delay: Double = 0.0, initialVelocity: CGFloat = 0.0, stiffness: CGFloat = 900.0, damping: CGFloat = 88.0, removeOnCompletion: Bool = true, additive: Bool = false, completion: ((Bool) -> Void)? = nil, key: String? = nil) {
++        if let animation = ayuSteppedAnimation(layer: self, from: from, to: to, keyPath: keyPath, isLinear: false, duration: duration, delay: delay, removeOnCompletion: removeOnCompletion, additive: additive, completion: completion) {
++            self.add(animation, forKey: additive ? key : (key ?? keyPath))
++            return
++        }
+         let animation = makeSpringBounceAnimation(keyPath, initialVelocity, damping)
+         animation.stiffness = stiffness
+         animation.fromValue = from
+diff --git a/submodules/ReactionSelectionNode/Sources/ReactionContextBackgroundNode.swift b/submodules/ReactionSelectionNode/Sources/ReactionContextBackgroundNode.swift
+index 5a5f721..58d6581 100644
+--- a/submodules/ReactionSelectionNode/Sources/ReactionContextBackgroundNode.swift
++++ b/submodules/ReactionSelectionNode/Sources/ReactionContextBackgroundNode.swift
+@@ -149,7 +149,7 @@ final class ReactionContextBackgroundNode: ASDisplayNode {
+     }
+     
+     func updateIsIntersectingContent(isIntersectingContent: Bool, transition: ContainedViewLayoutTransition) {
+-        let shadowAlpha: CGFloat = isIntersectingContent ? 1.0 : 0.0
++        let shadowAlpha: CGFloat = (isIntersectingContent && !AyuPixelStyle.isEnabled) ? 1.0 : 0.0
+         transition.updateAlpha(layer: self.backgroundShadowLayer, alpha: shadowAlpha)
+         transition.updateAlpha(layer: self.smallCircleShadowLayer, alpha: shadowAlpha)
+         transition.updateAlpha(layer: self.largeCircleShadowLayer, alpha: shadowAlpha)
+diff --git a/submodules/TelegramUI/Components/ButtonComponent/Sources/ButtonComponent.swift b/submodules/TelegramUI/Components/ButtonComponent/Sources/ButtonComponent.swift
+index 174ed87..8c3e668 100644
+--- a/submodules/TelegramUI/Components/ButtonComponent/Sources/ButtonComponent.swift
++++ b/submodules/TelegramUI/Components/ButtonComponent/Sources/ButtonComponent.swift
+@@ -730,6 +730,13 @@ public final class ButtonComponent: Component {
+             self.component = component
+             self.componentState = state
+ 
++            if AyuPixelStyle.isEnabled && component.background.style != .actualGlass {
++                self.layer.shadowColor = component.background.color.cgColor
++                self.layer.shadowOpacity = 0.5
++                self.layer.shadowRadius = 4.0
++                self.layer.shadowOffset = CGSize()
++            }
++
+             self.longPressGesture?.isEnabled = component.longPressAction != nil
+             
+             self.button.isEnabled = (component.isEnabled || component.allowActionWhenDisabled) && !component.displaysProgress
+diff --git a/submodules/TelegramUI/Components/Chat/ChatMessageAnimatedStickerItemNode/Sources/ChatMessageAnimatedStickerItemNode.swift b/submodules/TelegramUI/Components/Chat/ChatMessageAnimatedStickerItemNode/Sources/ChatMessageAnimatedStickerItemNode.swift
+index 25f0a55..d35471b 100644
+--- a/submodules/TelegramUI/Components/Chat/ChatMessageAnimatedStickerItemNode/Sources/ChatMessageAnimatedStickerItemNode.swift
++++ b/submodules/TelegramUI/Components/Chat/ChatMessageAnimatedStickerItemNode/Sources/ChatMessageAnimatedStickerItemNode.swift
+@@ -273,6 +273,8 @@ public class ChatMessageAnimatedStickerItemNode: ChatMessageItemView {
+     override public func didLoad() {
+         super.didLoad()
+         
++        AyuPixelStyle.applyMediaStyle(to: self.imageNode.layer, cell: 2.0)
++
+         let recognizer = TapLongTapOrDoubleTapGestureRecognizer(target: self, action: #selector(self.tapLongTapOrDoubleTapGesture(_:)))
+         recognizer.tapActionAtPoint = { [weak self] point in
+             if let strongSelf = self {
+diff --git a/submodules/TelegramUI/Components/Chat/ChatMessageStickerItemNode/Sources/ChatMessageStickerItemNode.swift b/submodules/TelegramUI/Components/Chat/ChatMessageStickerItemNode/Sources/ChatMessageStickerItemNode.swift
+index 7e2dc75..499d0d0 100644
+--- a/submodules/TelegramUI/Components/Chat/ChatMessageStickerItemNode/Sources/ChatMessageStickerItemNode.swift
++++ b/submodules/TelegramUI/Components/Chat/ChatMessageStickerItemNode/Sources/ChatMessageStickerItemNode.swift
+@@ -211,6 +211,8 @@ public class ChatMessageStickerItemNode: ChatMessageItemView {
+     override public func didLoad() {
+         super.didLoad()
+         
++        AyuPixelStyle.applyMediaStyle(to: self.imageNode.layer, cell: 2.0)
++
+         let recognizer = TapLongTapOrDoubleTapGestureRecognizer(target: self, action: #selector(self.tapLongTapOrDoubleTapGesture(_:)))
+         recognizer.tapActionAtPoint = { [weak self] point in
+             if let strongSelf = self {
+diff --git a/submodules/TelegramUI/Components/ChatList/ChatListFilterTabContainerNode/Sources/ChatListFilterTabContainerNode.swift b/submodules/TelegramUI/Components/ChatList/ChatListFilterTabContainerNode/Sources/ChatListFilterTabContainerNode.swift
+index fb6220f..446a1ab 100644
+--- a/submodules/TelegramUI/Components/ChatList/ChatListFilterTabContainerNode/Sources/ChatListFilterTabContainerNode.swift
++++ b/submodules/TelegramUI/Components/ChatList/ChatListFilterTabContainerNode/Sources/ChatListFilterTabContainerNode.swift
+@@ -275,7 +275,7 @@ private final class ItemNode: ASDisplayNode {
+         transition.updateAlpha(node: self.badgeContainerNode, alpha: (isEditing || isDisabled || isReordering || unreadCount == 0) ? 0.0 : 1.0)
+         
+         let selectionAlpha: CGFloat = selectionFraction * selectionFraction
+-        let deselectionAlpha: CGFloat = isDisabled ? 0.5 : 1.0// - selectionFraction
++        let deselectionAlpha: CGFloat = isDisabled ? 0.5 : (AyuPixelStyle.isEnabled ? (1.0 - selectionFraction) : 1.0)// - selectionFraction
+         
+         transition.updateAlpha(node: self.titleNode, alpha: deselectionAlpha)
+         transition.updateAlpha(node: self.titleActiveNode, alpha: selectionAlpha)
+@@ -301,11 +301,11 @@ private final class ItemNode: ASDisplayNode {
+         self.shortTitleActiveNode.visibility = title.enableAnimations
+         
+         if themeUpdated || titleUpdated {
+-            self.titleNode.attributedText = title.attributedString(font: AyuPixelStyle.isEnabled ? Font.pixelLabel(12.0, medium: true) : Font.medium(14.0), textColor: presentationData.theme.chat.inputPanel.panelControlColor)
+-            self.titleActiveNode.attributedText = title.attributedString(font: AyuPixelStyle.isEnabled ? Font.pixelLabel(12.0, medium: true) : Font.medium(14.0), textColor: presentationData.theme.chat.inputPanel.panelControlColor)
++            self.titleNode.attributedText = AyuPixelStyle.uppercased(title.attributedString(font: AyuPixelStyle.isEnabled ? Font.pixelLabel(12.0, medium: true) : Font.medium(14.0), textColor: presentationData.theme.chat.inputPanel.panelControlColor))
++            self.titleActiveNode.attributedText = AyuPixelStyle.uppercased(title.attributedString(font: AyuPixelStyle.isEnabled ? Font.pixelLabel(12.0, medium: true) : Font.medium(14.0), textColor: AyuPixelStyle.isEnabled ? presentationData.theme.list.plainBackgroundColor : presentationData.theme.chat.inputPanel.panelControlColor))
+             
+-            self.shortTitleNode.attributedText = shortTitle.attributedString(font: AyuPixelStyle.isEnabled ? Font.pixelLabel(12.0, medium: true) : Font.medium(14.0), textColor: presentationData.theme.chat.inputPanel.panelControlColor)
+-            self.shortTitleActiveNode.attributedText = shortTitle.attributedString(font: AyuPixelStyle.isEnabled ? Font.pixelLabel(12.0, medium: true) : Font.medium(14.0), textColor: presentationData.theme.chat.inputPanel.panelControlColor)
++            self.shortTitleNode.attributedText = AyuPixelStyle.uppercased(shortTitle.attributedString(font: AyuPixelStyle.isEnabled ? Font.pixelLabel(12.0, medium: true) : Font.medium(14.0), textColor: presentationData.theme.chat.inputPanel.panelControlColor))
++            self.shortTitleActiveNode.attributedText = AyuPixelStyle.uppercased(shortTitle.attributedString(font: AyuPixelStyle.isEnabled ? Font.pixelLabel(12.0, medium: true) : Font.medium(14.0), textColor: AyuPixelStyle.isEnabled ? presentationData.theme.list.plainBackgroundColor : presentationData.theme.chat.inputPanel.panelControlColor))
+         }
+         
+         if unreadCount != 0 {
+@@ -716,7 +716,7 @@ public final class ChatListFilterTabContainerNode: ASDisplayNode {
+         let previousContentWidth = self.scrollNode.view.contentSize.width
+         
+         if self.currentParams?.presentationData.theme !== presentationData.theme {
+-            self.selectedBackgroundNode.image = generateStretchableFilledCircleImage(diameter: 36.0, color: presentationData.theme.chatList.itemHighlightedBackgroundColor)
++            self.selectedBackgroundNode.image = generateStretchableFilledCircleImage(diameter: 36.0, color: AyuPixelStyle.isEnabled ? presentationData.theme.list.itemPrimaryTextColor : presentationData.theme.chatList.itemHighlightedBackgroundColor)
+         }
+         
+         if isReordering {
+diff --git a/submodules/TelegramUI/Components/ChatListHeaderComponent/Sources/ChatListTitleComponent.swift b/submodules/TelegramUI/Components/ChatListHeaderComponent/Sources/ChatListTitleComponent.swift
+index 0396589..0c6b5d4 100644
+--- a/submodules/TelegramUI/Components/ChatListHeaderComponent/Sources/ChatListTitleComponent.swift
++++ b/submodules/TelegramUI/Components/ChatListHeaderComponent/Sources/ChatListTitleComponent.swift
+@@ -65,6 +65,7 @@ final class ChatListTitleComponent: Component {
+         func update(component: ChatListTitleComponent, availableSize: CGSize, state: EmptyComponentState, environment: Environment<NavigationBarTitleEnvironment>, transition: ComponentTransition) -> CGSize {
+             self.component = component
+             let rightButtonsExtent = environment[NavigationBarTitleEnvironment.self].value.rightButtonsExtent
++            let leftButtonsExtent = environment[NavigationBarTitleEnvironment.self].value.leftButtonsExtent
+ 
+             var titleTransition = transition
+             let titleView: ChatListTitleView
+@@ -98,7 +99,9 @@ final class ChatListTitleComponent: Component {
+             }
+ 
+             let titleOffset: CGFloat
+-            if component.title.activity {
++            if AyuPixelStyle.isEnabled {
++                titleOffset = leftButtonsExtent + 8.0 - titleContentRect.minX
++            } else if component.title.activity {
+                 titleOffset = 0.0
+             } else {
+                 titleOffset = centerContentOffsetX * component.sideContentFraction
+diff --git a/submodules/TelegramUI/Components/ChatListTitleView/Sources/ChatListTitleView.swift b/submodules/TelegramUI/Components/ChatListTitleView/Sources/ChatListTitleView.swift
+index 864ed93..70c588a 100644
+--- a/submodules/TelegramUI/Components/ChatListTitleView/Sources/ChatListTitleView.swift
++++ b/submodules/TelegramUI/Components/ChatListTitleView/Sources/ChatListTitleView.swift
+@@ -12,7 +12,7 @@ import TelegramCore
+ import ComponentDisplayAdapters
+ import AccountContext
+ 
+-private let titleFont = AyuPixelStyle.isEnabled ? Font.pixelTitle(26.0) : Font.with(size: 17.0, design: .regular, weight: .semibold, traits: [.monospacedNumbers])
++private let titleFont = AyuPixelStyle.isEnabled ? Font.pixelTitle(34.0) : Font.with(size: 17.0, design: .regular, weight: .semibold, traits: [.monospacedNumbers])
+ 
+ public struct NetworkStatusTitle: Equatable {
+     public enum Status: Equatable {
+@@ -358,6 +358,13 @@ public final class ChatListTitleView: UIView, NavigationBarTitleView, Navigation
+             maxTitleWidth -= 10.0
+         }
+         
++        if AyuPixelStyle.isEnabled {
++            self.titleNode.layer.shadowColor = self.theme.rootController.navigationBar.primaryTextColor.cgColor
++            self.titleNode.layer.shadowOpacity = 0.5
++            self.titleNode.layer.shadowRadius = 3.0
++            self.titleNode.layer.shadowOffset = CGSize()
++        }
++
+         let titleSize = self.titleNode.updateLayout(CGSize(width: max(1.0, maxTitleWidth), height: size.height))
+         
+         let combinedHeight = titleSize.height
+diff --git a/submodules/TelegramUI/Components/EmojiTextAttachmentView/Sources/EmojiTextAttachmentView.swift b/submodules/TelegramUI/Components/EmojiTextAttachmentView/Sources/EmojiTextAttachmentView.swift
+index 7137613..d7e3997 100644
+--- a/submodules/TelegramUI/Components/EmojiTextAttachmentView/Sources/EmojiTextAttachmentView.swift
++++ b/submodules/TelegramUI/Components/EmojiTextAttachmentView/Sources/EmojiTextAttachmentView.swift
+@@ -492,6 +492,8 @@ public final class InlineStickerItemLayer: MultiAnimationRenderTarget {
+         
+         super.init()
+         
++        AyuPixelStyle.applyMediaStyle(to: self, cell: AyuPixelStyle.mediaCell(size: pointSize))
++
+         if let custom = emoji.custom {
+             switch custom {
+             case let .topic(id, info):
+diff --git a/submodules/TelegramUI/Components/LottieComponent/Sources/LottieComponent.swift b/submodules/TelegramUI/Components/LottieComponent/Sources/LottieComponent.swift
+index d620650..ca54865 100644
+--- a/submodules/TelegramUI/Components/LottieComponent/Sources/LottieComponent.swift
++++ b/submodules/TelegramUI/Components/LottieComponent/Sources/LottieComponent.swift
+@@ -209,6 +209,8 @@ public final class LottieComponent: Component {
+         override init(frame: CGRect) {
+             super.init(frame: frame)
+             
++            AyuPixelStyle.applyMediaStyle(to: self.layer)
++
+             let hierarchyTrackingLayer = HierarchyTrackingLayer()
+             self.hierarchyTrackingLayer = hierarchyTrackingLayer
+             self.layer.addSublayer(hierarchyTrackingLayer)
+diff --git a/submodules/TelegramUI/Components/Stories/StoryPeerListComponent/Sources/StoryPeerListComponent.swift b/submodules/TelegramUI/Components/Stories/StoryPeerListComponent/Sources/StoryPeerListComponent.swift
+index eef8659..3708e84 100644
+--- a/submodules/TelegramUI/Components/Stories/StoryPeerListComponent/Sources/StoryPeerListComponent.swift
++++ b/submodules/TelegramUI/Components/Stories/StoryPeerListComponent/Sources/StoryPeerListComponent.swift
+@@ -1756,8 +1756,8 @@ public final class StoryPeerListComponent: Component {
+             if self.titleState != updatedTitleState {
+                 self.titleState = updatedTitleState
+                 
+-                let attributedText = NSAttributedString(string: updatedTitleState.text, attributes: [
+-                    NSAttributedString.Key.font: Font.semibold(17.0),
++                let attributedText = NSAttributedString(string: AyuPixelStyle.isEnabled ? updatedTitleState.text.uppercased() : updatedTitleState.text, attributes: [
++                    NSAttributedString.Key.font: AyuPixelStyle.isEnabled ? Font.pixelTitle(34.0) : Font.semibold(17.0),
+                     NSAttributedString.Key.foregroundColor: component.theme.rootController.navigationBar.primaryTextColor
+                 ])
+                 
+diff --git a/submodules/TelegramUI/Components/Stories/StoryPeerListComponent/Sources/StoryPeerListTitleLayout.swift b/submodules/TelegramUI/Components/Stories/StoryPeerListComponent/Sources/StoryPeerListTitleLayout.swift
+index 29679f0..122761a 100644
+--- a/submodules/TelegramUI/Components/Stories/StoryPeerListComponent/Sources/StoryPeerListTitleLayout.swift
++++ b/submodules/TelegramUI/Components/Stories/StoryPeerListComponent/Sources/StoryPeerListTitleLayout.swift
+@@ -1,3 +1,4 @@
++import Display
+ import CoreGraphics
+ 
+ /// Where the chat list header's title content stands (the stories' avatars or the activity spinner, then the title with
+@@ -15,6 +16,9 @@ enum StoryPeerListTitleLayout {
+     /// The content's left edge in a row of `containerWidth`, the band between the buttons running from `minX` to `maxX`.
+     static func contentOrigin(containerWidth: CGFloat, contentWidth: CGFloat, minX: CGFloat, maxX: CGFloat) -> CGFloat {
+         let lowerBound = minX + StoryPeerListTitleLayout.leadingMargin
++        if AyuPixelStyle.isEnabled {
++            return lowerBound
++        }
+         let upperBound = maxX - StoryPeerListTitleLayout.trailingMargin
+         let centred = (containerWidth - contentWidth) * 0.5
+         let balanced = (lowerBound + upperBound - contentWidth) * 0.5
+diff --git a/submodules/UIKitRuntimeUtils/Source/UIKitRuntimeUtils/UIKitUtils.h b/submodules/UIKitRuntimeUtils/Source/UIKitRuntimeUtils/UIKitUtils.h
+index 6602226..cd98a49 100644
+--- a/submodules/UIKitRuntimeUtils/Source/UIKitRuntimeUtils/UIKitUtils.h
++++ b/submodules/UIKitRuntimeUtils/Source/UIKitRuntimeUtils/UIKitUtils.h
+@@ -33,6 +33,7 @@ NSObject * _Nullable makeVariableBlurFilter();
+ NSObject * _Nullable makeLuminanceToAlphaFilter();
+ NSObject * _Nullable makeColorInvertFilter();
+ NSObject * _Nullable makeMonochromeFilter();
++NSObject * _Nullable makeGrayscaleFilter();
+ NSObject * _Nullable makeDisplacementMapFilter();
+ NSObject * _Nullable makeColorMatrixFilter();
+ 
+diff --git a/submodules/UIKitRuntimeUtils/Source/UIKitRuntimeUtils/UIKitUtils.m b/submodules/UIKitRuntimeUtils/Source/UIKitRuntimeUtils/UIKitUtils.m
+index 3191bf1..80c2b30 100644
+--- a/submodules/UIKitRuntimeUtils/Source/UIKitRuntimeUtils/UIKitUtils.m
++++ b/submodules/UIKitRuntimeUtils/Source/UIKitRuntimeUtils/UIKitUtils.m
+@@ -282,6 +282,12 @@ NSObject * _Nullable makeMonochromeFilter() {
+     return [(id<GraphicsFilterProtocol>)NSClassFromString(@"CAFilter") filterWithName:@"colorMonochrome"];
+ }
+ 
++NSObject * _Nullable makeGrayscaleFilter() {
++    NSObject *filter = [(id<GraphicsFilterProtocol>)NSClassFromString(@"CAFilter") filterWithName:@"colorSaturate"];
++    [filter setValue:@(0.0f) forKey:@"inputAmount"];
++    return filter;
++}
++
+ NSObject * _Nullable makeDisplacementMapFilter() {
+     if (@available(iOS 26.0, *)) {
+         return [(id<GraphicsFilterProtocol>)NSClassFromString(@"CAFilter") filterWithName:@"displacementMap"];
