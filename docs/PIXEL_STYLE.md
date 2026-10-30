@@ -30,6 +30,10 @@ Two patches apply last, in this order: `patches/ayugram-pixel-style.patch` and `
 - Image wallpapers already saved by a user stay in place.
 - The tinted night theme only becomes grayscale: its bubbles and accent are not reworked.
 
+## Builds
+
+Every push to `pixel-style-stage1` that changes the port starts `Native iOS port` in GitHub Actions as a `debug_arm64` build. The repository needs Actions enabled and the secrets `TELEGRAM_API_ID` and `TELEGRAM_API_HASH`. The Bazel disk cache is saved after failed builds too and is bounded to 20 GB before compression, so the archive stays under the 10 GB limit of a cache entry. The first build has no cache. A change in `Display` rebuilds far more than a change in a screen module.
+
 ## Device checks
 
 The second patch has not been compiled or run yet.
