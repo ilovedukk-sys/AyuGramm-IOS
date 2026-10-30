@@ -319,7 +319,7 @@ index 6da2641..d45e2c2 100644
      }
      
 +    let drawTail = drawTailValue && !AyuPixelStyle.isEnabled
-+    
++
      let fixedMainDiameter: CGFloat = 33.0
      let innerSize = CGSize(width: fixedMainDiameter + 6.0, height: fixedMainDiameter)
      let strokeInset: CGFloat = 1.0
@@ -413,7 +413,7 @@ index ea6339f..30e755a 100644
      
 +    // The pixel style draws outgoing bubbles white, so their content turns black.
 +    let outgoingInk: UInt32 = AyuPixelStyle.isEnabled ? 0x000000 : 0xffffff
-+    
++
      let message = PresentationThemeChatMessage(
          incoming: PresentationThemePartedColors(
              bubble: PresentationThemeBubbleColor(
