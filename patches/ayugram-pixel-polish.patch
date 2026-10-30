@@ -399,7 +399,7 @@ index 613de4e..7ec0b50 100644
          animation.stiffness = stiffness
          animation.fromValue = from
 diff --git a/submodules/ReactionSelectionNode/Sources/ReactionContextBackgroundNode.swift b/submodules/ReactionSelectionNode/Sources/ReactionContextBackgroundNode.swift
-index 5a5f721..58d6581 100644
+index 5a5f721..cca86f9 100644
 --- a/submodules/ReactionSelectionNode/Sources/ReactionContextBackgroundNode.swift
 +++ b/submodules/ReactionSelectionNode/Sources/ReactionContextBackgroundNode.swift
 @@ -149,7 +149,7 @@ final class ReactionContextBackgroundNode: ASDisplayNode {
@@ -411,6 +411,15 @@ index 5a5f721..58d6581 100644
          transition.updateAlpha(layer: self.backgroundShadowLayer, alpha: shadowAlpha)
          transition.updateAlpha(layer: self.smallCircleShadowLayer, alpha: shadowAlpha)
          transition.updateAlpha(layer: self.largeCircleShadowLayer, alpha: shadowAlpha)
+@@ -258,7 +258,7 @@ final class ReactionContextBackgroundNode: ASDisplayNode {
+                 glassTintColor = .init(kind: .panel)
+             }
+             glassBackgroundView.container.update(size: glassBackgroundFrame.size, isDark: glass.isDark, transition: ComponentTransition(transition))
+-            glassBackgroundView.view.update(size: glassBackgroundFrame.size, cornerRadius: 23.0, isDark: true, tintColor: glassTintColor, transition: ComponentTransition(transition))
++            glassBackgroundView.view.update(size: glassBackgroundFrame.size, cornerRadius: 23.0, isDark: AyuPixelStyle.isEnabled ? glass.isDark : true, tintColor: glassTintColor, transition: ComponentTransition(transition))
+             
+             transition.updateFrame(view: self.backgroundTintView, frame: CGRect(origin: CGPoint(x: 0.0, y: 0.0), size: CGSize(width: contentBounds.width, height: contentBounds.height)).insetBy(dx: -10.0, dy: -10.0))
+         } else {
 diff --git a/submodules/TelegramUI/Components/ButtonComponent/Sources/ButtonComponent.swift b/submodules/TelegramUI/Components/ButtonComponent/Sources/ButtonComponent.swift
 index 174ed87..8c3e668 100644
 --- a/submodules/TelegramUI/Components/ButtonComponent/Sources/ButtonComponent.swift
@@ -494,7 +503,7 @@ index fb6220f..446a1ab 100644
          
          if isReordering {
 diff --git a/submodules/TelegramUI/Components/ChatListHeaderComponent/Sources/ChatListTitleComponent.swift b/submodules/TelegramUI/Components/ChatListHeaderComponent/Sources/ChatListTitleComponent.swift
-index 0396589..0c6b5d4 100644
+index 0396589..2934063 100644
 --- a/submodules/TelegramUI/Components/ChatListHeaderComponent/Sources/ChatListTitleComponent.swift
 +++ b/submodules/TelegramUI/Components/ChatListHeaderComponent/Sources/ChatListTitleComponent.swift
 @@ -65,6 +65,7 @@ final class ChatListTitleComponent: Component {
@@ -505,19 +514,25 @@ index 0396589..0c6b5d4 100644
  
              var titleTransition = transition
              let titleView: ChatListTitleView
-@@ -98,7 +99,9 @@ final class ChatListTitleComponent: Component {
+@@ -81,6 +82,7 @@ final class ChatListTitleComponent: Component {
+             titleView.theme = component.theme
+             titleView.strings = component.strings
+             titleView.setTitle(component.title, animated: false)
++            titleView.ayuSideInsets = (leftButtonsExtent, rightButtonsExtent)
+             let titleContentRect = titleView.updateLayoutInternal(size: availableSize, transition: transition.containedViewLayoutTransition)
+             let centerContentOffsetX = -max(0.0, titleContentRect.maxX - 2.0 - (availableSize.width - rightButtonsExtent))
+ 
+@@ -98,7 +100,7 @@ final class ChatListTitleComponent: Component {
              }
  
              let titleOffset: CGFloat
 -            if component.title.activity {
-+            if AyuPixelStyle.isEnabled {
-+                titleOffset = leftButtonsExtent + 8.0 - titleContentRect.minX
-+            } else if component.title.activity {
++            if AyuPixelStyle.isEnabled || component.title.activity {
                  titleOffset = 0.0
              } else {
                  titleOffset = centerContentOffsetX * component.sideContentFraction
 diff --git a/submodules/TelegramUI/Components/ChatListTitleView/Sources/ChatListTitleView.swift b/submodules/TelegramUI/Components/ChatListTitleView/Sources/ChatListTitleView.swift
-index 864ed93..70c588a 100644
+index 864ed93..016dd88 100644
 --- a/submodules/TelegramUI/Components/ChatListTitleView/Sources/ChatListTitleView.swift
 +++ b/submodules/TelegramUI/Components/ChatListTitleView/Sources/ChatListTitleView.swift
 @@ -12,7 +12,7 @@ import TelegramCore
@@ -529,11 +544,20 @@ index 864ed93..70c588a 100644
  
  public struct NetworkStatusTitle: Equatable {
      public enum Status: Equatable {
-@@ -358,6 +358,13 @@ public final class ChatListTitleView: UIView, NavigationBarTitleView, Navigation
+@@ -66,6 +66,7 @@ public final class ChatListTitleView: UIView, NavigationBarTitleView, Navigation
+     private var validLayout: CGSize?
+     
+     public var manualLayout: Bool = false
++    public var ayuSideInsets: (left: CGFloat, right: CGFloat) = (0.0, 0.0)
+     
+     private var _title: NetworkStatusTitle = NetworkStatusTitle(text: "", activity: false, hasProxy: false, connectsViaProxy: false, isPasscodeSet: false, isManuallyLocked: false, peerStatus: nil)
+     public var title: NetworkStatusTitle {
+@@ -358,6 +359,14 @@ public final class ChatListTitleView: UIView, NavigationBarTitleView, Navigation
              maxTitleWidth -= 10.0
          }
          
 +        if AyuPixelStyle.isEnabled {
++            maxTitleWidth -= max(16.0, self.ayuSideInsets.left + 8.0) + self.ayuSideInsets.right + 8.0
 +            self.titleNode.layer.shadowColor = self.theme.rootController.navigationBar.primaryTextColor.cgColor
 +            self.titleNode.layer.shadowOpacity = 0.5
 +            self.titleNode.layer.shadowRadius = 3.0
@@ -543,6 +567,17 @@ index 864ed93..70c588a 100644
          let titleSize = self.titleNode.updateLayout(CGSize(width: max(1.0, maxTitleWidth), height: size.height))
          
          let combinedHeight = titleSize.height
+@@ -366,6 +375,10 @@ public final class ChatListTitleView: UIView, NavigationBarTitleView, Navigation
+         
+         var titleContentRect = CGRect(origin: CGPoint(x: indicatorPadding + floor((size.width - combinedWidth - indicatorPadding) / 2.0), y: floor((size.height - combinedHeight) / 2.0)), size: titleSize)
+         
++        if AyuPixelStyle.isEnabled {
++            // The activity indicator and the lock stand to the left of the title.
++            titleContentRect.origin.x = max(16.0, self.ayuSideInsets.left + 8.0) + max(indicatorPadding, self.lockView.isHidden ? 0.0 : 18.0)
++        }
+         titleContentRect.origin.x = min(titleContentRect.origin.x, size.width - proxyPadding - titleContentRect.width)
+         
+         let titleFrame = titleContentRect
 diff --git a/submodules/TelegramUI/Components/EmojiTextAttachmentView/Sources/EmojiTextAttachmentView.swift b/submodules/TelegramUI/Components/EmojiTextAttachmentView/Sources/EmojiTextAttachmentView.swift
 index 7137613..d7e3997 100644
 --- a/submodules/TelegramUI/Components/EmojiTextAttachmentView/Sources/EmojiTextAttachmentView.swift
@@ -603,6 +638,28 @@ index 29679f0..122761a 100644
          let upperBound = maxX - StoryPeerListTitleLayout.trailingMargin
          let centred = (containerWidth - contentWidth) * 0.5
          let balanced = (lowerBound + upperBound - contentWidth) * 0.5
+diff --git a/submodules/TelegramUI/Components/TabBarComponent/Sources/TabBarComponent.swift b/submodules/TelegramUI/Components/TabBarComponent/Sources/TabBarComponent.swift
+index 0188683..0153824 100644
+--- a/submodules/TelegramUI/Components/TabBarComponent/Sources/TabBarComponent.swift
++++ b/submodules/TelegramUI/Components/TabBarComponent/Sources/TabBarComponent.swift
+@@ -907,7 +907,7 @@ public final class TabBarComponent: Component {
+                 transition.setFrame(view: self.materialContentView, frame: CGRect(origin: CGPoint(), size: tabsSize))
+                 // Material 3 secondary container behind the selected icon: a 64 x 32 pill.
+                 self.materialIndicatorView.backgroundColor = AyuPixelStyle.isEnabled ? (isDark ? UIColor.white : UIColor.black) : (isDark ? UIColor(rgb: 0x4a4458) : UIColor(rgb: 0xe8def8))
+-                if let selectedItemFrame, !(search?.isActive ?? false) {
++                if let selectedItemFrame, !(search?.isActive ?? false), !AyuPixelStyle.isEnabled || component.tintSelectedItem {
+                     let indicatorFrame = AyuPixelStyle.isEnabled ? selectedItemFrame : CGRect(x: selectedItemFrame.midX - 32.0, y: selectedItemFrame.minY + 2.0, width: 64.0, height: 32.0)
+                     transition.setFrame(view: self.materialIndicatorView, frame: indicatorFrame)
+                     transition.setAlpha(view: self.materialIndicatorView, alpha: 1.0)
+@@ -1386,7 +1386,7 @@ private final class ItemComponent: Component {
+             let titleSize = self.title.update(
+                 transition: .immediate,
+                 component: AnyComponent(MultilineTextComponent(
+-                    text: .plain(NSAttributedString(string: AyuPixelStyle.isEnabled ? title.uppercased() : title, font: AyuPixelStyle.isEnabled ? Font.pixelLabel(10.0) : Font.semibold(10.0), textColor: (component.isSelected && component.tintSelectedItem) ? selectedColor : component.theme.rootController.tabBar.textColor))
++                    text: .plain(NSAttributedString(string: AyuPixelStyle.isEnabled ? title.uppercased() : title, font: AyuPixelStyle.isEnabled ? Font.pixelLabel(10.0) : Font.semibold(10.0), textColor: (component.isSelected && component.tintSelectedItem && !(AyuPixelStyle.isEnabled && component.isSearchActive)) ? selectedColor : component.theme.rootController.tabBar.textColor))
+                 )),
+                 environment: {},
+                 containerSize: CGSize(width: availableSize.width, height: 100.0)
 diff --git a/submodules/UIKitRuntimeUtils/Source/UIKitRuntimeUtils/UIKitUtils.h b/submodules/UIKitRuntimeUtils/Source/UIKitRuntimeUtils/UIKitUtils.h
 index 6602226..cd98a49 100644
 --- a/submodules/UIKitRuntimeUtils/Source/UIKitRuntimeUtils/UIKitUtils.h
