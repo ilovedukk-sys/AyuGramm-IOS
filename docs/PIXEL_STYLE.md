@@ -26,7 +26,7 @@ Three patches apply last, in this order: `patches/ayugram-pixel-style.patch`, `p
 
 ## Not done
 
-- `CallStatusBarWavesLayer` still draws its Metal waves in the call status bar, and the selected tab keeps a slide on the Reduce Motion spring where a screen animates it with `.spring`.
+- `CallStatusBarWavesLayer` still draws its Metal waves in the call status bar.
 - The settings profile keeps its stock layout. The chat list title stays 34 pt, not the 64 pt of the mockup, because the navigation bar keeps its height.
 - Photos, videos, the sticker and emoji pickers, and `AnimationNode` animations keep their colors.
 - Shapes drawn directly with `fillEllipse`, `addArc` or `CGPath` stay round.
@@ -41,7 +41,7 @@ Every push to `pixel-style-stage1` that changes the port starts `Native iOS port
 
 ## Device checks
 
-The third patch has not been compiled or run yet.
+All three patches compile as `debug_arm64`. None of these checks has been done on a device yet.
 
 1. The app builds, including the extensions. Extensions do not bundle the fonts and must fall back to the system font.
 2. All fonts load, and weights differ between regular and semibold. `UIAppFonts` lists them in `Telegram/BUILD`.
