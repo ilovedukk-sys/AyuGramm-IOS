@@ -70,6 +70,10 @@ Message menus now offer **Repeat Text** (confirmed append to a draft, no automat
 
 Opt-in scheduled sending and read-after-send, Telegram/LibreTranslate/DeepL translation, HTML+JSON chat export or forwarding to Saved Messages, a media archive manager, a local-only emoji status and **AyuGram · Repeat** with a sender-hidden copy for attachments. See [scope and limits](docs/ADVANCED_FEATURES.md). These blocks are included in Release 4.
 
+## Pixel style (development source)
+
+Stage 1 of a black-and-white pixel look: grayscale colors, Golos Text and Handjet fonts, stepped bubble corners without tails. It is on for the whole app and has no setting yet. It has not been compiled. See [scope and device checks](docs/PIXEL_STYLE.md).
+
 ## Cloud builds from Windows
 
 Builds are run manually by the owner in **Codemagic** with the pinned Xcode 27.1. `ayugram-ios-unsigned` builds `release_arm64` (optimized, published IPAs); `ayugram-ios-fast` builds `debug_arm64` for quick compile checks and test installs (unoptimized, no dSYM, larger and slower at runtime). Both run the cheap source checks before downloading the large native dependencies, so most source errors fail within minutes. GitHub Actions runs the same steps: pushes to `main` that change the port (`patches/`, `ci/`, `upstream.json`, the workflow) build the optimized `release_arm64` IPA, and **Run workflow** can choose `debug_arm64` for a faster compile check (about 500 MB IPA). Actions uses the repository secrets `TELEGRAM_API_ID` and `TELEGRAM_API_HASH`.

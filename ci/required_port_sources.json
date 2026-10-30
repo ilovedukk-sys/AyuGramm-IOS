@@ -8,6 +8,7 @@
   "submodules/Display/Source/AyuArcadeGameController.swift",
   "submodules/Display/Source/AyuChatColorPickerController.swift",
   "submodules/Display/Source/AyuPetpetController.swift",
+  "submodules/Display/Source/AyuPixelStyle.swift",
   "submodules/Display/Source/AyuPluginAvatar.swift",
   "submodules/PasscodeCore/Tests/PasscodeCoreTests/AyuPrivateKeychainTests.swift",
   "submodules/SettingsUI/Sources/AyuAppIconPickerController.swift",

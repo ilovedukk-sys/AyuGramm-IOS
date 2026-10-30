@@ -1,0 +1,629 @@
+diff --git a/Telegram/BUILD b/Telegram/BUILD
+index 509767b..9f0c3e1 100644
+--- a/Telegram/BUILD
++++ b/Telegram/BUILD
+@@ -1794,6 +1794,8 @@ plist_fragment(
+         <string>AremacFS-Regular.otf</string>
+         <string>AremacFS-Semibold.otf</string>
+         <string>YSMusic-HeadlineBold.ttf</string>
++        <string>GolosText-Variable.ttf</string>
++        <string>Handjet-Variable.ttf</string>
+     </array>
+     <key>UIApplicationSceneManifest</key>
+     <dict>
+diff --git a/submodules/Display/Source/AyuPixelStyle.swift b/submodules/Display/Source/AyuPixelStyle.swift
+new file mode 100644
+index 0000000..4d01350
+--- /dev/null
++++ b/submodules/Display/Source/AyuPixelStyle.swift
+@@ -0,0 +1,20 @@
++import Foundation
++
++// Monochrome pixel look. Every change of the style checks this one switch.
++public enum AyuPixelStyle {
++    public static var isEnabled: Bool {
++        return true
++    }
++
++    // Rec. 709 luma; the alpha byte of an ARGB value is kept.
++    public static func monochrome(_ value: UInt32) -> UInt32 {
++        guard self.isEnabled else {
++            return value
++        }
++        let red = (value >> 16) & 0xff
++        let green = (value >> 8) & 0xff
++        let blue = value & 0xff
++        let luma = (red * 2126 + green * 7152 + blue * 722 + 5000) / 10000
++        return (value & 0xff000000) | (luma << 16) | (luma << 8) | luma
++    }
++}
+diff --git a/submodules/Display/Source/Font.swift b/submodules/Display/Source/Font.swift
+index e53d8ae..6fbca74 100644
+--- a/submodules/Display/Source/Font.swift
++++ b/submodules/Display/Source/Font.swift
+@@ -158,6 +158,62 @@ public struct Font {
+     }
+ 
+     private static let cache = Cache()
++
++    private static func ayuPixelFont(name: String, size: CGFloat, weight: CGFloat, italic: Bool = false, monospacedNumbers: Bool = false) -> UIFont? {
++        guard AyuPixelStyle.isEnabled else {
++            return nil
++        }
++        let key = "ayu_\(name)_\(size)_\(weight)_\(italic)_\(monospacedNumbers)"
++        if let cachedFont = self.cache.get(key) {
++            return cachedFont
++        }
++        // App extensions do not bundle these fonts and keep the system font.
++        guard let baseFont = UIFont(name: name, size: size) else {
++            return nil
++        }
++        // 2003265652 is the 'wght' variation axis tag.
++        var attributes: [UIFontDescriptor.AttributeName: Any] = [
++            UIFontDescriptor.AttributeName(rawValue: kCTFontVariationAttribute as String): [NSNumber(value: 2003265652): NSNumber(value: Double(weight))] as [NSNumber: NSNumber]
++        ]
++        if monospacedNumbers {
++            attributes[UIFontDescriptor.AttributeName.featureSettings] = [[
++                UIFontDescriptor.FeatureKey.type.rawValue: kNumberSpacingType,
++                UIFontDescriptor.FeatureKey.selector.rawValue: kMonospacedNumbersSelector
++            ]] as [[String: Any]]
++        }
++        var descriptor = baseFont.fontDescriptor.addingAttributes(attributes)
++        if italic {
++            // Golos Text has no italic faces.
++            descriptor = descriptor.withMatrix(CGAffineTransform(a: 1.0, b: 0.0, c: 0.2, d: 1.0, tx: 0.0, ty: 0.0))
++        }
++        let font = UIFont(descriptor: descriptor, size: size)
++        self.cache.set(font, key: key)
++        return font
++    }
++
++    private static func ayuBody(_ size: CGFloat, weight: CGFloat, italic: Bool = false, monospacedNumbers: Bool = false) -> UIFont? {
++        return self.ayuPixelFont(name: "GolosText-Regular", size: size, weight: weight, italic: italic, monospacedNumbers: monospacedNumbers)
++    }
++
++    private static func ayuBodyWeight(_ weight: Weight) -> CGFloat {
++        switch weight {
++        case .regular, .thin, .light:
++            return 400.0
++        case .medium:
++            return 500.0
++        case .semibold:
++            return 600.0
++        case .bold:
++            return 700.0
++        case .heavy:
++            return 800.0
++        }
++    }
++
++    // Handjet has a small x-height, so titles get a larger point size.
++    public static func pixelTitle(_ size: CGFloat) -> UIFont {
++        return self.ayuPixelFont(name: "Handjet-Regular", size: floor(size * 1.4), weight: 500.0) ?? self.semibold(size)
++    }
+     
+     public static func with(size: CGFloat, design: Design = .regular, weight: Weight = .regular, width: Width = .standard, traits: Traits = []) -> UIFont {
+         let key = "\(size)_\(design.key)_\(weight.key)_\(width.key)_\(traits.rawValue)"
+@@ -165,6 +221,10 @@ public struct Font {
+         if let cachedFont = self.cache.get(key) {
+             return cachedFont
+         }
++        if design == .regular || design == .round, let font = self.ayuBody(size, weight: self.ayuBodyWeight(weight), italic: traits.contains(.italic), monospacedNumbers: traits.contains(.monospacedNumbers)) {
++            self.cache.set(font, key: key)
++            return font
++        }
+         if #available(iOS 13.0, *), design != .camera {
+             let descriptor: UIFontDescriptor
+             if #available(iOS 14.0, *) {
+@@ -289,18 +349,30 @@ public struct Font {
+     }
+     
+     public static func regular(_ size: CGFloat) -> UIFont {
++        if let font = self.ayuBody(size, weight: 400.0) {
++            return font
++        }
+         return UIFont.systemFont(ofSize: size)
+     }
+     
+     public static func medium(_ size: CGFloat) -> UIFont {
++        if let font = self.ayuBody(size, weight: 500.0) {
++            return font
++        }
+         return UIFont.systemFont(ofSize: size, weight: UIFont.Weight.medium)
+     }
+     
+     public static func semibold(_ size: CGFloat) -> UIFont {
++        if let font = self.ayuBody(size, weight: 600.0) {
++            return font
++        }
+         return UIFont.systemFont(ofSize: size, weight: UIFont.Weight.semibold)
+     }
+     
+     public static func bold(_ size: CGFloat) -> UIFont {
++        if let font = self.ayuBody(size, weight: 700.0) {
++            return font
++        }
+         if #available(iOS 8.2, *) {
+             return UIFont.boldSystemFont(ofSize: size)
+         } else {
+@@ -313,10 +385,16 @@ public struct Font {
+     }
+     
+     public static func light(_ size: CGFloat) -> UIFont {
++        if let font = self.ayuBody(size, weight: 400.0) {
++            return font
++        }
+         return UIFont.systemFont(ofSize: size, weight: UIFont.Weight.light)
+     }
+     
+     public static func semiboldItalic(_ size: CGFloat) -> UIFont {
++        if let font = self.ayuBody(size, weight: 600.0, italic: true) {
++            return font
++        }
+         if let descriptor = UIFont.systemFont(ofSize: size).fontDescriptor.withSymbolicTraits([.traitBold, .traitItalic]) {
+             return UIFont(descriptor: descriptor, size: size)
+         } else {
+@@ -325,6 +403,9 @@ public struct Font {
+     }
+     
+     public static func mediumItalic(_ size: CGFloat) -> UIFont {
++        if let font = self.ayuBody(size, weight: 500.0, italic: true) {
++            return font
++        }
+         if let descriptor = UIFont.systemFont(ofSize: size, weight: .medium).fontDescriptor.withSymbolicTraits([.traitItalic]) {
+             return UIFont(descriptor: descriptor, size: size)
+         } else {
+@@ -349,6 +430,9 @@ public struct Font {
+     }
+     
+     public static func italic(_ size: CGFloat) -> UIFont {
++        if let font = self.ayuBody(size, weight: 400.0, italic: true) {
++            return font
++        }
+         return UIFont.italicSystemFont(ofSize: size)
+     }
+ }
+diff --git a/submodules/Display/Source/NavigationTitleNode.swift b/submodules/Display/Source/NavigationTitleNode.swift
+index fb87efe..6ddb73c 100644
+--- a/submodules/Display/Source/NavigationTitleNode.swift
++++ b/submodules/Display/Source/NavigationTitleNode.swift
+@@ -40,7 +40,7 @@ public class NavigationTitleNode: ASDisplayNode {
+     
+     private func setText(_ text: NSString) {
+         var titleAttributes = [NSAttributedString.Key : AnyObject]()
+-        titleAttributes[NSAttributedString.Key.font] = UIFont.boldSystemFont(ofSize: 17.0)
++        titleAttributes[NSAttributedString.Key.font] = AyuPixelStyle.isEnabled ? Font.pixelTitle(17.0) : UIFont.boldSystemFont(ofSize: 17.0)
+         titleAttributes[NSAttributedString.Key.foregroundColor] = self.color
+         let titleString = NSAttributedString(string: text as String, attributes: titleAttributes)
+         self.label.attributedText = titleString
+diff --git a/submodules/Display/Source/UIKitUtils.swift b/submodules/Display/Source/UIKitUtils.swift
+index 5003654..2e49edc 100644
+--- a/submodules/Display/Source/UIKitUtils.swift
++++ b/submodules/Display/Source/UIKitUtils.swift
+@@ -68,14 +68,17 @@ public let UIScreenPixel = 1.0 / UIScreenScale
+ 
+ public extension UIColor {
+     convenience init(rgb: UInt32) {
++        let rgb = AyuPixelStyle.monochrome(rgb)
+         self.init(red: CGFloat((rgb >> 16) & 0xff) / 255.0, green: CGFloat((rgb >> 8) & 0xff) / 255.0, blue: CGFloat(rgb & 0xff) / 255.0, alpha: 1.0)
+     }
+     
+     convenience init(rgb: UInt32, alpha: CGFloat) {
++        let rgb = AyuPixelStyle.monochrome(rgb)
+         self.init(red: CGFloat((rgb >> 16) & 0xff) / 255.0, green: CGFloat((rgb >> 8) & 0xff) / 255.0, blue: CGFloat(rgb & 0xff) / 255.0, alpha: alpha)
+     }
+     
+     convenience init(argb: UInt32) {
++        let argb = AyuPixelStyle.monochrome(argb)
+         self.init(red: CGFloat((argb >> 16) & 0xff) / 255.0, green: CGFloat((argb >> 8) & 0xff) / 255.0, blue: CGFloat(argb & 0xff) / 255.0, alpha: CGFloat((argb >> 24) & 0xff) / 255.0)
+     }
+     
+diff --git a/submodules/TelegramPresentationData/Sources/ChatMessageBubbleImages.swift b/submodules/TelegramPresentationData/Sources/ChatMessageBubbleImages.swift
+index 6da2641..d45e2c2 100644
+--- a/submodules/TelegramPresentationData/Sources/ChatMessageBubbleImages.swift
++++ b/submodules/TelegramPresentationData/Sources/ChatMessageBubbleImages.swift
+@@ -28,6 +28,34 @@ public func messageSingleBubbleLikeImage(fillColor: UIColor, strokeColor: UIColo
+ 
+ private let minRadiusForFullTailCorner: CGFloat = 14.0
+ 
++// Corners cut in two equal steps. A zero radius stays a plain corner.
++private func addAyuPixelBubblePath(context: CGContext, rect: CGRect, topLeft: CGFloat, topRight: CGFloat, bottomRight: CGFloat, bottomLeft: CGFloat) {
++    let points: [CGPoint] = [
++        CGPoint(x: rect.minX, y: rect.minY + topLeft),
++        CGPoint(x: rect.minX + topLeft / 2.0, y: rect.minY + topLeft),
++        CGPoint(x: rect.minX + topLeft / 2.0, y: rect.minY + topLeft / 2.0),
++        CGPoint(x: rect.minX + topLeft, y: rect.minY + topLeft / 2.0),
++        CGPoint(x: rect.minX + topLeft, y: rect.minY),
++        CGPoint(x: rect.maxX - topRight, y: rect.minY),
++        CGPoint(x: rect.maxX - topRight, y: rect.minY + topRight / 2.0),
++        CGPoint(x: rect.maxX - topRight / 2.0, y: rect.minY + topRight / 2.0),
++        CGPoint(x: rect.maxX - topRight / 2.0, y: rect.minY + topRight),
++        CGPoint(x: rect.maxX, y: rect.minY + topRight),
++        CGPoint(x: rect.maxX, y: rect.maxY - bottomRight),
++        CGPoint(x: rect.maxX - bottomRight / 2.0, y: rect.maxY - bottomRight),
++        CGPoint(x: rect.maxX - bottomRight / 2.0, y: rect.maxY - bottomRight / 2.0),
++        CGPoint(x: rect.maxX - bottomRight, y: rect.maxY - bottomRight / 2.0),
++        CGPoint(x: rect.maxX - bottomRight, y: rect.maxY),
++        CGPoint(x: rect.minX + bottomLeft, y: rect.maxY),
++        CGPoint(x: rect.minX + bottomLeft, y: rect.maxY - bottomLeft / 2.0),
++        CGPoint(x: rect.minX + bottomLeft / 2.0, y: rect.maxY - bottomLeft / 2.0),
++        CGPoint(x: rect.minX + bottomLeft / 2.0, y: rect.maxY - bottomLeft),
++        CGPoint(x: rect.minX, y: rect.maxY - bottomLeft)
++    ]
++    context.addLines(between: points)
++    context.closePath()
++}
++
+ func mediaBubbleCornerImage(incoming: Bool, radius: CGFloat, inset: CGFloat) -> UIImage {
+     let imageSize = CGSize(width: radius + 7.0, height: 8.0)
+     let fixedMainDiameter: CGFloat = 33.0
+@@ -140,7 +168,7 @@ public func messageBubbleArguments(maxCornerRadius: CGFloat, minCornerRadius: CG
+         bottomLeftRadius = tmp
+     }
+     
+-    return (topLeftRadius, topRightRadius, bottomLeftRadius, bottomRightRadius, drawTail)
++    return (topLeftRadius, topRightRadius, bottomLeftRadius, bottomRightRadius, drawTail && !AyuPixelStyle.isEnabled)
+ }
+ 
+ public func messageBubbleImage(maxCornerRadius: CGFloat, minCornerRadius: CGFloat, incoming: Bool, fillColor: UIColor, strokeColor: UIColor, neighbors: MessageBubbleImageNeighbors, shadow: PresentationThemeBubbleShadow?, wallpaper: TelegramWallpaper, knockout knockoutValue: Bool, mask: Bool = false, extendedEdges: Bool = false, onlyOutline: Bool = false, onlyShadow: Bool = false, alwaysFillColor: Bool = false) -> UIImage {
+@@ -148,7 +176,7 @@ public func messageBubbleImage(maxCornerRadius: CGFloat, minCornerRadius: CGFloa
+     let topRightRadius: CGFloat
+     let bottomLeftRadius: CGFloat
+     let bottomRightRadius: CGFloat
+-    let drawTail: Bool
++    let drawTailValue: Bool
+     
+     switch neighbors {
+     case .none:
+@@ -156,39 +184,41 @@ public func messageBubbleImage(maxCornerRadius: CGFloat, minCornerRadius: CGFloa
+         topRightRadius = maxCornerRadius
+         bottomLeftRadius = maxCornerRadius
+         bottomRightRadius = maxCornerRadius
+-        drawTail = true
++        drawTailValue = true
+     case .both:
+         topLeftRadius = maxCornerRadius
+         topRightRadius = minCornerRadius
+         bottomLeftRadius = maxCornerRadius
+         bottomRightRadius = minCornerRadius
+-        drawTail = false
++        drawTailValue = false
+     case .bottom:
+         topLeftRadius = maxCornerRadius
+         topRightRadius = minCornerRadius
+         bottomLeftRadius = maxCornerRadius
+         bottomRightRadius = maxCornerRadius
+-        drawTail = true
++        drawTailValue = true
+     case .side:
+         topLeftRadius = maxCornerRadius
+         topRightRadius = maxCornerRadius
+         bottomLeftRadius = minCornerRadius
+         bottomRightRadius = minCornerRadius
+-        drawTail = false
++        drawTailValue = false
+     case let .top(side):
+         topLeftRadius = maxCornerRadius
+         topRightRadius = maxCornerRadius
+         bottomLeftRadius = side ? minCornerRadius : maxCornerRadius
+         bottomRightRadius = minCornerRadius
+-        drawTail = false
++        drawTailValue = false
+     case .extracted:
+         topLeftRadius = maxCornerRadius
+         topRightRadius = maxCornerRadius
+         bottomLeftRadius = maxCornerRadius
+         bottomRightRadius = maxCornerRadius
+-        drawTail = false
++        drawTailValue = false
+     }
+     
++    let drawTail = drawTailValue && !AyuPixelStyle.isEnabled
++    
+     let fixedMainDiameter: CGFloat = 33.0
+     let innerSize = CGSize(width: fixedMainDiameter + 6.0, height: fixedMainDiameter)
+     let strokeInset: CGFloat = 1.0
+@@ -212,16 +242,21 @@ public func messageBubbleImage(maxCornerRadius: CGFloat, minCornerRadius: CGFloa
+         
+         context.setFillColor(UIColor.black.cgColor)
+         
+-        context.move(to: CGPoint(x: 0.0, y: topLeftRadius))
+-        context.addArc(tangent1End: CGPoint(x: 0.0, y: 0.0), tangent2End: CGPoint(x: topLeftRadius, y: 0.0), radius: topLeftRadius)
+-        context.addLine(to: CGPoint(x: fixedMainDiameter - topRightRadius, y: 0.0))
+-        context.addArc(tangent1End: CGPoint(x: fixedMainDiameter, y: 0.0), tangent2End: CGPoint(x: fixedMainDiameter, y: topRightRadius), radius: topRightRadius)
+-        context.addLine(to: CGPoint(x: fixedMainDiameter, y: fixedMainDiameter - bottomRightRadius))
+-        context.addArc(tangent1End: CGPoint(x: fixedMainDiameter, y: fixedMainDiameter), tangent2End: CGPoint(x: fixedMainDiameter - bottomRightRadius, y: fixedMainDiameter), radius: bottomRightRadius)
+-        context.addLine(to: CGPoint(x: bottomLeftRadius, y: fixedMainDiameter))
+-        context.addArc(tangent1End: CGPoint(x: 0.0, y: fixedMainDiameter), tangent2End: CGPoint(x: 0.0, y: fixedMainDiameter - bottomLeftRadius), radius: bottomLeftRadius)
+-        context.addLine(to: CGPoint(x: 0.0, y: topLeftRadius))
+-        context.fillPath()
++        if AyuPixelStyle.isEnabled {
++            addAyuPixelBubblePath(context: context, rect: CGRect(x: 0.0, y: 0.0, width: fixedMainDiameter, height: fixedMainDiameter), topLeft: topLeftRadius, topRight: topRightRadius, bottomRight: bottomRightRadius, bottomLeft: bottomLeftRadius)
++            context.fillPath()
++        } else {
++            context.move(to: CGPoint(x: 0.0, y: topLeftRadius))
++            context.addArc(tangent1End: CGPoint(x: 0.0, y: 0.0), tangent2End: CGPoint(x: topLeftRadius, y: 0.0), radius: topLeftRadius)
++            context.addLine(to: CGPoint(x: fixedMainDiameter - topRightRadius, y: 0.0))
++            context.addArc(tangent1End: CGPoint(x: fixedMainDiameter, y: 0.0), tangent2End: CGPoint(x: fixedMainDiameter, y: topRightRadius), radius: topRightRadius)
++            context.addLine(to: CGPoint(x: fixedMainDiameter, y: fixedMainDiameter - bottomRightRadius))
++            context.addArc(tangent1End: CGPoint(x: fixedMainDiameter, y: fixedMainDiameter), tangent2End: CGPoint(x: fixedMainDiameter - bottomRightRadius, y: fixedMainDiameter), radius: bottomRightRadius)
++            context.addLine(to: CGPoint(x: bottomLeftRadius, y: fixedMainDiameter))
++            context.addArc(tangent1End: CGPoint(x: 0.0, y: fixedMainDiameter), tangent2End: CGPoint(x: 0.0, y: fixedMainDiameter - bottomLeftRadius), radius: bottomLeftRadius)
++            context.addLine(to: CGPoint(x: 0.0, y: topLeftRadius))
++            context.fillPath()
++        }
+         
+         if drawTail {
+             if maxCornerRadius >= minRadiusForFullTailCorner {
+@@ -265,16 +300,21 @@ public func messageBubbleImage(maxCornerRadius: CGFloat, minCornerRadius: CGFloa
+         }
+         context.setLineWidth(borderWidth)
+         
+-        context.move(to: CGPoint(x: -borderOffset, y: topLeftRadius + borderOffset))
+-        context.addArc(tangent1End: CGPoint(x: -borderOffset, y: -borderOffset), tangent2End: CGPoint(x: topLeftRadius + borderOffset, y: -borderOffset), radius: topLeftRadius + borderOffset * 2.0)
+-        context.addLine(to: CGPoint(x: fixedMainDiameter - topRightRadius - borderOffset, y: -borderOffset))
+-        context.addArc(tangent1End: CGPoint(x: fixedMainDiameter + borderOffset, y: -borderOffset), tangent2End: CGPoint(x: fixedMainDiameter + borderOffset, y: topRightRadius + borderOffset), radius: topRightRadius + borderOffset * 2.0)
+-        context.addLine(to: CGPoint(x: fixedMainDiameter + borderOffset, y: fixedMainDiameter - bottomRightRadius - borderOffset))
+-        context.addArc(tangent1End: CGPoint(x: fixedMainDiameter + borderOffset, y: fixedMainDiameter + borderOffset), tangent2End: CGPoint(x: fixedMainDiameter - bottomRightRadius - borderOffset, y: fixedMainDiameter + borderOffset), radius: bottomRightRadius + borderOffset * 2.0)
+-        context.addLine(to: CGPoint(x: bottomLeftRadius + borderOffset, y: fixedMainDiameter + borderOffset))
+-        context.addArc(tangent1End: CGPoint(x: -borderOffset, y: fixedMainDiameter + borderOffset), tangent2End: CGPoint(x: -borderOffset, y: fixedMainDiameter - bottomLeftRadius - borderOffset), radius: bottomLeftRadius + borderOffset * 2.0)
+-        context.closePath()
+-        context.strokePath()
++        if AyuPixelStyle.isEnabled {
++            addAyuPixelBubblePath(context: context, rect: CGRect(x: -borderOffset, y: -borderOffset, width: fixedMainDiameter + borderOffset * 2.0, height: fixedMainDiameter + borderOffset * 2.0), topLeft: topLeftRadius, topRight: topRightRadius, bottomRight: bottomRightRadius, bottomLeft: bottomLeftRadius)
++            context.strokePath()
++        } else {
++            context.move(to: CGPoint(x: -borderOffset, y: topLeftRadius + borderOffset))
++            context.addArc(tangent1End: CGPoint(x: -borderOffset, y: -borderOffset), tangent2End: CGPoint(x: topLeftRadius + borderOffset, y: -borderOffset), radius: topLeftRadius + borderOffset * 2.0)
++            context.addLine(to: CGPoint(x: fixedMainDiameter - topRightRadius - borderOffset, y: -borderOffset))
++            context.addArc(tangent1End: CGPoint(x: fixedMainDiameter + borderOffset, y: -borderOffset), tangent2End: CGPoint(x: fixedMainDiameter + borderOffset, y: topRightRadius + borderOffset), radius: topRightRadius + borderOffset * 2.0)
++            context.addLine(to: CGPoint(x: fixedMainDiameter + borderOffset, y: fixedMainDiameter - bottomRightRadius - borderOffset))
++            context.addArc(tangent1End: CGPoint(x: fixedMainDiameter + borderOffset, y: fixedMainDiameter + borderOffset), tangent2End: CGPoint(x: fixedMainDiameter - bottomRightRadius - borderOffset, y: fixedMainDiameter + borderOffset), radius: bottomRightRadius + borderOffset * 2.0)
++            context.addLine(to: CGPoint(x: bottomLeftRadius + borderOffset, y: fixedMainDiameter + borderOffset))
++            context.addArc(tangent1End: CGPoint(x: -borderOffset, y: fixedMainDiameter + borderOffset), tangent2End: CGPoint(x: -borderOffset, y: fixedMainDiameter - bottomLeftRadius - borderOffset), radius: bottomLeftRadius + borderOffset * 2.0)
++            context.closePath()
++            context.strokePath()
++        }
+         
+         if drawTail {
+             let outlineBottomEllipse = bottomEllipse.insetBy(dx: -borderOffset, dy: -borderOffset)
+diff --git a/submodules/TelegramPresentationData/Sources/DefaultDarkPresentationTheme.swift b/submodules/TelegramPresentationData/Sources/DefaultDarkPresentationTheme.swift
+index ea6339f..30e755a 100644
+--- a/submodules/TelegramPresentationData/Sources/DefaultDarkPresentationTheme.swift
++++ b/submodules/TelegramPresentationData/Sources/DefaultDarkPresentationTheme.swift
+@@ -1,5 +1,6 @@
+ import Foundation
+ import UIKit
++import Display
+ import TelegramCore
+ import TelegramUIPreferences
+ 
+@@ -404,7 +405,7 @@ public func makeDefaultDarkPresentationTheme(extendingThemeReference: Presentati
+     let switchColors = PresentationThemeSwitch(
+         frameColor: UIColor(rgb: 0x39393d),
+         handleColor: UIColor(rgb: 0x121212),
+-        contentColor: UIColor(rgb: 0x67ce67),
++        contentColor: AyuPixelStyle.isEnabled ? UIColor(rgb: 0xffffff) : UIColor(rgb: 0x67ce67),
+         positiveColor: UIColor(rgb: 0x08a723),
+         negativeColor: UIColor(rgb: 0xeb5545)
+     )
+@@ -519,6 +520,9 @@ public func makeDefaultDarkPresentationTheme(extendingThemeReference: Presentati
+ 
+     let incomingBubbleAlpha: CGFloat = 0.9
+     
++    // The pixel style draws outgoing bubbles white, so their content turns black.
++    let outgoingInk: UInt32 = AyuPixelStyle.isEnabled ? 0x000000 : 0xffffff
++    
+     let message = PresentationThemeChatMessage(
+         incoming: PresentationThemePartedColors(
+             bubble: PresentationThemeBubbleColor(
+@@ -561,13 +565,13 @@ public func makeDefaultDarkPresentationTheme(extendingThemeReference: Presentati
+         outgoing: PresentationThemePartedColors(
+             bubble: PresentationThemeBubbleColor(
+                 withWallpaper: PresentationThemeBubbleColorComponents(
+-                    fill: [UIColor(rgb: 0x61BCF9), UIColor(rgb: 0x0088ff)],
+-                    highlightedFill: UIColor(rgb: 0x61BCF9),
++                    fill: AyuPixelStyle.isEnabled ? [UIColor(rgb: 0xffffff)] : [UIColor(rgb: 0x61BCF9), UIColor(rgb: 0x0088ff)],
++                    highlightedFill: AyuPixelStyle.isEnabled ? UIColor(rgb: 0xcccccc) : UIColor(rgb: 0x61BCF9),
+                     stroke: .clear,
+                     shadow: nil,
+-                    reactionInactiveBackground: UIColor(rgb: 0xffffff, alpha: 0.1),
+-                    reactionInactiveForeground: UIColor(rgb: 0xffffff),
+-                    reactionActiveBackground: UIColor(rgb: 0xffffff, alpha: 1.0),
++                    reactionInactiveBackground: UIColor(rgb: outgoingInk, alpha: 0.1),
++                    reactionInactiveForeground: UIColor(rgb: outgoingInk),
++                    reactionActiveBackground: UIColor(rgb: outgoingInk, alpha: 1.0),
+                     reactionActiveForeground: .clear,
+                     reactionStarsInactiveBackground: UIColor(rgb: 0xD3720A, alpha: 0.2),
+                     reactionStarsInactiveForeground: UIColor(rgb: 0xFFD738),
+@@ -577,13 +581,13 @@ public func makeDefaultDarkPresentationTheme(extendingThemeReference: Presentati
+                     reactionActiveMediaPlaceholder: UIColor(rgb: 0x000000, alpha: 0.1)
+                 ),
+                 withoutWallpaper: PresentationThemeBubbleColorComponents(
+-                    fill: [UIColor(rgb: 0x61BCF9), UIColor(rgb: 0x0088ff)],
+-                    highlightedFill: UIColor(rgb: 0x61BCF9),
++                    fill: AyuPixelStyle.isEnabled ? [UIColor(rgb: 0xffffff)] : [UIColor(rgb: 0x61BCF9), UIColor(rgb: 0x0088ff)],
++                    highlightedFill: AyuPixelStyle.isEnabled ? UIColor(rgb: 0xcccccc) : UIColor(rgb: 0x61BCF9),
+                     stroke: .clear,
+                     shadow: nil,
+-                    reactionInactiveBackground: UIColor(rgb: 0xffffff, alpha: 0.1),
+-                    reactionInactiveForeground: UIColor(rgb: 0xffffff),
+-                    reactionActiveBackground: UIColor(rgb: 0xffffff, alpha: 1.0),
++                    reactionInactiveBackground: UIColor(rgb: outgoingInk, alpha: 0.1),
++                    reactionInactiveForeground: UIColor(rgb: outgoingInk),
++                    reactionActiveBackground: UIColor(rgb: outgoingInk, alpha: 1.0),
+                     reactionActiveForeground: .clear,
+                     reactionStarsInactiveBackground: UIColor(rgb: 0xD3720A, alpha: 0.2),
+                     reactionStarsInactiveForeground: UIColor(rgb: 0xFFD738),
+@@ -592,7 +596,7 @@ public func makeDefaultDarkPresentationTheme(extendingThemeReference: Presentati
+                     reactionInactiveMediaPlaceholder: UIColor(rgb: 0x000000, alpha: 0.1),
+                     reactionActiveMediaPlaceholder: UIColor(rgb: 0x000000, alpha: 0.1)
+                 )
+-            ), primaryTextColor: UIColor(rgb: 0xffffff), secondaryTextColor: UIColor(rgb: 0xffffff, alpha: 0.5), linkTextColor: UIColor(rgb: 0xffffff), linkHighlightColor: UIColor(rgb: 0xffffff, alpha: 0.5), scamColor: UIColor(rgb: 0xeb5545), textHighlightColor: UIColor(rgb: 0xf5c038), accentTextColor: UIColor(rgb: 0xffffff), accentControlColor: UIColor(rgb: 0xffffff), accentControlDisabledColor: UIColor(rgb: 0xffffff, alpha: 0.5), mediaActiveControlColor: UIColor(rgb: 0xffffff), mediaInactiveControlColor: UIColor(rgb: 0xffffff, alpha: 0.5), mediaControlInnerBackgroundColor:  UIColor(rgb: 0x313131), pendingActivityColor: UIColor(rgb: 0xffffff, alpha: 0.5), fileTitleColor: UIColor(rgb: 0xffffff), fileDescriptionColor: UIColor(rgb: 0xffffff, alpha: 0.5), fileDurationColor: UIColor(rgb: 0xffffff, alpha: 0.5), mediaPlaceholderColor: UIColor(rgb: 0xffffff, alpha: 0.2), polls: PresentationThemeChatBubblePolls(radioButton: UIColor(rgb: 0xffffff, alpha: 0.5), radioProgress: UIColor(rgb: 0xffffff), highlight: UIColor(rgb: 0xffffff).withAlphaComponent(0.12), separator: UIColor(rgb: 0xffffff, alpha: 0.5), bar: UIColor(rgb: 0xffffff), barIconForeground: .clear, barPositive: UIColor(rgb: 0xffffff), barNegative: UIColor(rgb: 0xffffff)), actionButtonsFillColor: PresentationThemeVariableColor(withWallpaper: UIColor(rgb: 0x000000, alpha: 0.5), withoutWallpaper: UIColor(rgb: 0x000000, alpha: 0.5)), actionButtonsStrokeColor: PresentationThemeVariableColor(color: UIColor(rgb: 0xb2b2b2, alpha: 0.18)), actionButtonsTextColor: PresentationThemeVariableColor(color: UIColor(rgb: 0xffffff)), textSelectionColor: UIColor(rgb: 0xffffff, alpha: 0.2), textSelectionKnobColor: UIColor(rgb: 0xffffff)
++            ), primaryTextColor: UIColor(rgb: outgoingInk), secondaryTextColor: UIColor(rgb: outgoingInk, alpha: 0.5), linkTextColor: UIColor(rgb: outgoingInk), linkHighlightColor: UIColor(rgb: outgoingInk, alpha: 0.5), scamColor: UIColor(rgb: 0xeb5545), textHighlightColor: UIColor(rgb: 0xf5c038), accentTextColor: UIColor(rgb: outgoingInk), accentControlColor: UIColor(rgb: outgoingInk), accentControlDisabledColor: UIColor(rgb: outgoingInk, alpha: 0.5), mediaActiveControlColor: UIColor(rgb: outgoingInk), mediaInactiveControlColor: UIColor(rgb: outgoingInk, alpha: 0.5), mediaControlInnerBackgroundColor: AyuPixelStyle.isEnabled ? UIColor(rgb: 0xffffff) : UIColor(rgb: 0x313131), pendingActivityColor: UIColor(rgb: outgoingInk, alpha: 0.5), fileTitleColor: UIColor(rgb: outgoingInk), fileDescriptionColor: UIColor(rgb: outgoingInk, alpha: 0.5), fileDurationColor: UIColor(rgb: outgoingInk, alpha: 0.5), mediaPlaceholderColor: UIColor(rgb: outgoingInk, alpha: 0.2), polls: PresentationThemeChatBubblePolls(radioButton: UIColor(rgb: outgoingInk, alpha: 0.5), radioProgress: UIColor(rgb: outgoingInk), highlight: UIColor(rgb: outgoingInk).withAlphaComponent(0.12), separator: UIColor(rgb: outgoingInk, alpha: 0.5), bar: UIColor(rgb: outgoingInk), barIconForeground: .clear, barPositive: UIColor(rgb: outgoingInk), barNegative: UIColor(rgb: outgoingInk)), actionButtonsFillColor: PresentationThemeVariableColor(withWallpaper: UIColor(rgb: 0x000000, alpha: 0.5), withoutWallpaper: UIColor(rgb: 0x000000, alpha: 0.5)), actionButtonsStrokeColor: PresentationThemeVariableColor(color: UIColor(rgb: 0xb2b2b2, alpha: 0.18)), actionButtonsTextColor: PresentationThemeVariableColor(color: UIColor(rgb: 0xffffff)), textSelectionColor: UIColor(rgb: outgoingInk, alpha: 0.2), textSelectionKnobColor: UIColor(rgb: outgoingInk)
+         ),
+         freeform: PresentationThemeBubbleColor(
+             withWallpaper: PresentationThemeBubbleColorComponents(
+@@ -730,7 +734,7 @@ public func makeDefaultDarkPresentationTheme(extendingThemeReference: Presentati
+     let defaultPatternWallpaper: TelegramWallpaper = defaultBuiltinWallpaper(data: .default, colors: defaultDarkWallpaperGradientColors.map(\.rgb), intensity: -34)
+     
+     let chat = PresentationThemeChat(
+-        defaultWallpaper: defaultPatternWallpaper,
++        defaultWallpaper: AyuPixelStyle.isEnabled ? .color(0x000000) : defaultPatternWallpaper,
+         animateMessageColors: false,
+         message: message,
+         serviceMessage: serviceMessage,
+diff --git a/submodules/TelegramPresentationData/Sources/DefaultDayPresentationTheme.swift b/submodules/TelegramPresentationData/Sources/DefaultDayPresentationTheme.swift
+index 6723524..a34a0d5 100644
+--- a/submodules/TelegramPresentationData/Sources/DefaultDayPresentationTheme.swift
++++ b/submodules/TelegramPresentationData/Sources/DefaultDayPresentationTheme.swift
+@@ -53,7 +53,7 @@ public func dateFillNeedsBlur(theme: PresentationTheme, wallpaper: TelegramWallp
+ 
+ public let defaultServiceBackgroundColor = UIColor(rgb: 0x000000, alpha: 0.2)
+ public let defaultPresentationTheme = makeDefaultDayPresentationTheme(serviceBackgroundColor: defaultServiceBackgroundColor, day: false, preview: false)
+-public let defaultDayAccentColor = UIColor(rgb: 0x0088ff)
++public let defaultDayAccentColor = AyuPixelStyle.isEnabled ? UIColor(rgb: 0x000000) : UIColor(rgb: 0x0088ff)
+ 
+ public func customizeDefaultDayTheme(theme: PresentationTheme, editing: Bool, title: String?, accentColor: UIColor?, outgoingAccentColor: UIColor?, backgroundColors: [UInt32], bubbleColors: [UInt32], animateBubbleColors: Bool?, wallpaper forcedWallpaper: TelegramWallpaper? = nil, serviceBackgroundColor: UIColor?) -> PresentationTheme {
+     if (theme.referenceTheme != .day && theme.referenceTheme != .dayClassic) {
+@@ -388,7 +388,9 @@ public func customizeDefaultDayTheme(theme: PresentationTheme, editing: Bool, ti
+     )
+ }
+ 
+-public func makeDefaultDayPresentationTheme(extendingThemeReference: PresentationThemeReference? = nil, serviceBackgroundColor: UIColor?, day: Bool, preview: Bool) -> PresentationTheme {
++public func makeDefaultDayPresentationTheme(extendingThemeReference: PresentationThemeReference? = nil, serviceBackgroundColor: UIColor?, day isDayReference: Bool, preview: Bool) -> PresentationTheme {
++    // The pixel style always uses the Day bubble set: a white ground and solid outgoing bubbles.
++    let day = AyuPixelStyle.isEnabled ? true : isDayReference
+     var serviceBackgroundColor = serviceBackgroundColor ?? defaultServiceBackgroundColor
+ 
+     if !day {
+@@ -464,7 +466,7 @@ public func makeDefaultDayPresentationTheme(extendingThemeReference: Presentatio
+     let switchColors = PresentationThemeSwitch(
+         frameColor: UIColor(rgb: 0xe9e9ea),
+         handleColor: UIColor(rgb: 0xffffff),
+-        contentColor: UIColor(rgb: 0x35c759),
++        contentColor: AyuPixelStyle.isEnabled ? UIColor(rgb: 0x000000) : UIColor(rgb: 0x35c759),
+         positiveColor: UIColor(rgb: 0x00c900),
+         negativeColor: UIColor(rgb: 0xff3b30)
+     )
+@@ -754,7 +756,7 @@ public func makeDefaultDayPresentationTheme(extendingThemeReference: Presentatio
+                 withWallpaper: PresentationThemeBubbleColorComponents(
+                     fill: [UIColor(rgb: 0xffffff)],
+                     highlightedFill: UIColor(rgb: 0xdadade),
+-                    stroke: UIColor(rgb: 0xffffff),
++                    stroke: AyuPixelStyle.isEnabled ? UIColor(rgb: 0x000000) : UIColor(rgb: 0xffffff),
+                     shadow: nil,
+                     reactionInactiveBackground: defaultDayAccentColor.withMultipliedAlpha(0.1),
+                     reactionInactiveForeground: defaultDayAccentColor,
+@@ -768,9 +770,9 @@ public func makeDefaultDayPresentationTheme(extendingThemeReference: Presentatio
+                     reactionActiveMediaPlaceholder: UIColor(rgb: 0xffffff, alpha: 0.2)
+                 ),
+                 withoutWallpaper: PresentationThemeBubbleColorComponents(
+-                    fill: [UIColor(rgb: 0xf1f1f4)],
++                    fill: [AyuPixelStyle.isEnabled ? UIColor(rgb: 0xffffff) : UIColor(rgb: 0xf1f1f4)],
+                     highlightedFill: UIColor(rgb: 0xdadade),
+-                    stroke: UIColor(rgb: 0xf1f1f4),
++                    stroke: AyuPixelStyle.isEnabled ? UIColor(rgb: 0x000000) : UIColor(rgb: 0xf1f1f4),
+                     shadow: nil,
+                     reactionInactiveBackground: .clear,
+                     reactionInactiveForeground: defaultDayAccentColor,
+@@ -810,8 +812,8 @@ public func makeDefaultDayPresentationTheme(extendingThemeReference: Presentatio
+         outgoing: PresentationThemePartedColors(
+             bubble: PresentationThemeBubbleColor(
+                 withWallpaper: PresentationThemeBubbleColorComponents(
+-                    fill: [UIColor(rgb: 0x57b2e0), defaultDayAccentColor],
+-                    highlightedFill: UIColor(rgb: 0x57b2e0).withMultipliedBrightnessBy(0.7),
++                    fill: AyuPixelStyle.isEnabled ? [defaultDayAccentColor] : [UIColor(rgb: 0x57b2e0), defaultDayAccentColor],
++                    highlightedFill: AyuPixelStyle.isEnabled ? UIColor(rgb: 0x333333) : UIColor(rgb: 0x57b2e0).withMultipliedBrightnessBy(0.7),
+                     stroke: .clear,
+                     shadow: nil,
+                     reactionInactiveBackground: UIColor(rgb: 0xffffff, alpha: 0.12),
+@@ -826,8 +828,8 @@ public func makeDefaultDayPresentationTheme(extendingThemeReference: Presentatio
+                     reactionActiveMediaPlaceholder: UIColor(rgb: 0xffffff, alpha: 0.2)
+                 ),
+                 withoutWallpaper: PresentationThemeBubbleColorComponents(
+-                    fill: [UIColor(rgb: 0x57b2e0), defaultDayAccentColor],
+-                    highlightedFill: UIColor(rgb: 0x57b2e0).withMultipliedBrightnessBy(0.7),
++                    fill: AyuPixelStyle.isEnabled ? [defaultDayAccentColor] : [UIColor(rgb: 0x57b2e0), defaultDayAccentColor],
++                    highlightedFill: AyuPixelStyle.isEnabled ? UIColor(rgb: 0x333333) : UIColor(rgb: 0x57b2e0).withMultipliedBrightnessBy(0.7),
+                     stroke: .clear,
+                     shadow: nil,
+                     reactionInactiveBackground: UIColor(rgb: 0xffffff, alpha: 0.12),
+@@ -1084,9 +1086,9 @@ public func makeDefaultDayPresentationTheme(extendingThemeReference: Presentatio
+     )
+     
+     return PresentationTheme(
+-        name: extendingThemeReference?.name ?? .builtin(day ? .day : .dayClassic),
+-        index: extendingThemeReference?.index ?? PresentationThemeReference.builtin(day ? .day : .dayClassic).index,
+-        referenceTheme: day ? .day : .dayClassic,
++        name: extendingThemeReference?.name ?? .builtin(isDayReference ? .day : .dayClassic),
++        index: extendingThemeReference?.index ?? PresentationThemeReference.builtin(isDayReference ? .day : .dayClassic).index,
++        referenceTheme: isDayReference ? .day : .dayClassic,
+         overallDarkAppearance: false,
+         intro: intro,
+         passcode: passcode,
+diff --git a/submodules/TelegramPresentationData/Sources/MakePresentationTheme.swift b/submodules/TelegramPresentationData/Sources/MakePresentationTheme.swift
+index 3f0398e..c2abb42 100644
+--- a/submodules/TelegramPresentationData/Sources/MakePresentationTheme.swift
++++ b/submodules/TelegramPresentationData/Sources/MakePresentationTheme.swift
+@@ -1,5 +1,6 @@
+ import Foundation
+ import UIKit
++import Display
+ import Postbox
+ import TelegramUIPreferences
+ import TelegramCore
+@@ -20,6 +21,9 @@ public func makeDefaultPresentationTheme(reference: PresentationBuiltinThemeRefe
+ }
+ 
+ public func customizePresentationTheme(_ theme: PresentationTheme, editing: Bool, title: String? = nil, accentColor: UIColor?, outgoingAccentColor: UIColor?, backgroundColors: [UInt32], bubbleColors: [UInt32], animateBubbleColors: Bool?, wallpaper: TelegramWallpaper? = nil, baseColor: PresentationThemeBaseColor? = nil) -> PresentationTheme {
++    if AyuPixelStyle.isEnabled {
++        return theme
++    }
+     if accentColor == nil && bubbleColors.isEmpty && backgroundColors.isEmpty && wallpaper == nil {
+         return theme
+     }
+diff --git a/submodules/TelegramPresentationData/Sources/PresentationData.swift b/submodules/TelegramPresentationData/Sources/PresentationData.swift
+index cd15c71..79c9be1 100644
+--- a/submodules/TelegramPresentationData/Sources/PresentationData.swift
++++ b/submodules/TelegramPresentationData/Sources/PresentationData.swift
+@@ -71,10 +71,10 @@ public struct PresentationChatBubbleCorners: Equatable, Hashable {
+     public var hasTails: Bool
+     
+     public init(mainRadius: CGFloat, auxiliaryRadius: CGFloat, mergeBubbleCorners: Bool, hasTails: Bool = true) {
+-        self.mainRadius = mainRadius
+-        self.auxiliaryRadius = auxiliaryRadius
++        self.mainRadius = AyuPixelStyle.isEnabled ? 6.0 : mainRadius
++        self.auxiliaryRadius = AyuPixelStyle.isEnabled ? 0.0 : auxiliaryRadius
+         self.mergeBubbleCorners = mergeBubbleCorners
+-        self.hasTails = hasTails
++        self.hasTails = AyuPixelStyle.isEnabled ? false : hasTails
+     }
+ }
+ 
+diff --git a/submodules/TelegramUI/Components/ChatListTitleView/Sources/ChatListTitleView.swift b/submodules/TelegramUI/Components/ChatListTitleView/Sources/ChatListTitleView.swift
+index 36bd287..c380872 100644
+--- a/submodules/TelegramUI/Components/ChatListTitleView/Sources/ChatListTitleView.swift
++++ b/submodules/TelegramUI/Components/ChatListTitleView/Sources/ChatListTitleView.swift
+@@ -12,7 +12,7 @@ import TelegramCore
+ import ComponentDisplayAdapters
+ import AccountContext
+ 
+-private let titleFont = Font.with(size: 17.0, design: .regular, weight: .semibold, traits: [.monospacedNumbers])
++private let titleFont = AyuPixelStyle.isEnabled ? Font.pixelTitle(17.0) : Font.with(size: 17.0, design: .regular, weight: .semibold, traits: [.monospacedNumbers])
+ 
+ public struct NetworkStatusTitle: Equatable {
+     public enum Status: Equatable {
+diff --git a/submodules/TelegramUI/Components/ChatTitleView/Sources/ChatTitleComponent.swift b/submodules/TelegramUI/Components/ChatTitleView/Sources/ChatTitleComponent.swift
+index ba822d3..e0cddbb 100644
+--- a/submodules/TelegramUI/Components/ChatTitleView/Sources/ChatTitleComponent.swift
++++ b/submodules/TelegramUI/Components/ChatTitleView/Sources/ChatTitleComponent.swift
+@@ -1300,7 +1300,7 @@ public final class ChatTitleComponent: Component {
+             let titleSize = self.title.update(
+                 transition: transition,
+                 component: AnyComponent(AnimatedTextComponent(
+-                    font: Font.semibold(17.0),
++                    font: AyuPixelStyle.isEnabled ? Font.pixelTitle(17.0) : Font.semibold(17.0),
+                     color: component.theme.chat.inputPanel.panelControlColor,
+                     items: titleSegments,
+                     noDelay: false,

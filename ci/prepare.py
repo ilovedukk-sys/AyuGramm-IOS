@@ -32,6 +32,7 @@ patches = [
     root / "patches" / "ayugram-music-reference.patch",
     root / "patches" / "ayugram-peer-search.patch",
     root / "patches" / "ayugram-whitegram-js.patch",
+    root / "patches" / "ayugram-pixel-style.patch",
 ]
 for patch in patches:
     subprocess.run(["git", "apply", "--recount", "--check", str(patch)], cwd=source, check=True)
@@ -57,10 +58,11 @@ whitegram_target.parent.mkdir(parents=True, exist_ok=True)
 shutil.copy2(whitegram_bridge, whitegram_target)
 
 # TelegramUIResources includes Resources/**/* in the application bundle.
-font_src = root / "assets" / "fonts" / "YSMusic-HeadlineBold.ttf"
-font_dst = source / "submodules" / "TelegramUI" / "Resources" / font_src.name
-font_dst.parent.mkdir(parents=True, exist_ok=True)
-shutil.copy2(font_src, font_dst)
+for font_name in ("YSMusic-HeadlineBold.ttf", "GolosText-Variable.ttf", "Handjet-Variable.ttf"):
+    font_src = root / "assets" / "fonts" / font_name
+    font_dst = source / "submodules" / "TelegramUI" / "Resources" / font_src.name
+    font_dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(font_src, font_dst)
 
 missing = missing_port_sources(source)
 if missing:
