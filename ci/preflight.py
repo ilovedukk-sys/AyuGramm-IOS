@@ -129,6 +129,7 @@ def main():
                          '-sdk', sdk, '-target', 'arm64-apple-ios15.0-simulator']
                 bundle = Path(directory) / 'Bundle.swift'
                 bundle.write_text('\n'.join([
+                    'import SwiftUI',
                     'import WidgetKit',
                     '@available(iOS 14.0, *)',
                     'struct AyuBundleCheck: WidgetBundle {',
