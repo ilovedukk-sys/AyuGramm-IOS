@@ -322,6 +322,42 @@ index 0000000..1240c70
 +        self.kind = kind
 +    }
 +}
+diff --git a/submodules/ChatListUI/Sources/ChatListController.swift b/submodules/ChatListUI/Sources/ChatListController.swift
+index c810f86..10a01ef 100644
+--- a/submodules/ChatListUI/Sources/ChatListController.swift
++++ b/submodules/ChatListUI/Sources/ChatListController.swift
+@@ -6854,6 +6854,7 @@ private func chatListHeaderOverflowInfo(strings: PresentationStrings) -> [AnyHas
+         "compose": NavigationBarComponent.OverflowInfo(title: strings.Compose_NewMessage, iconName: "Chat List/ComposeIcon", priority: 3),
+         "proxy": NavigationBarComponent.OverflowInfo(title: strings.SocksProxySetup_Title, iconName: "Chat List/ProxyShieldIcon", priority: 2),
+         "story": NavigationBarComponent.OverflowInfo(title: strings.StoryFeed_AddStory, iconName: "Chat List/AddStoryIcon", priority: 1),
++        "settings": NavigationBarComponent.OverflowInfo(title: strings.Settings_Title, iconName: "Chat List/Tabs/IconSettings", priority: 0),
+         "more": NavigationBarComponent.OverflowInfo(title: strings.Common_More, iconName: nil, priority: nil)
+     ]
+ }
+@@ -6882,12 +6883,22 @@ private final class ChatListLocationContext {
+         if let rightButton = self.rightButton {
+             result.append(rightButton)
+         }
+-        if let storyButton = self.storyButton {
++        if let storyButton = self.storyButton, !AyuMessagesStyle.isEnabled {
+             result.append(storyButton)
+         }
+         if let proxyButton = self.proxyButton {
+             result.append(proxyButton)
+         }
++        // AyuGram Messages style: the way to Settings, as the chat list has no tab bar.
++        if AyuMessagesStyle.isEnabled, case .chatList(.root) = self.location, self.rightButton?.id == AnyHashable("compose") {
++            result.append(NavigationBarComponent.Button(id: "settings",
++                content: .icon(imageName: "Chat List/Tabs/IconSettings"),
++                tint: .generic,
++                action: { [weak self] _ in
++                    (self?.parentController?.navigationController as? TelegramRootControllerInterface)?.openSettings(edit: false)
++                }
++            ))
++        }
+         return result
+     }
+     
 diff --git a/submodules/ChatListUI/Sources/Node/ChatListItem.swift b/submodules/ChatListUI/Sources/Node/ChatListItem.swift
 index b422dfc..bf204d5 100644
 --- a/submodules/ChatListUI/Sources/Node/ChatListItem.swift
@@ -472,6 +508,19 @@ index b422dfc..bf204d5 100644
                          
                          if item.useCommunityViewLayout {
                              strongSelf.badgeNode.layer.rasterizationScale = UIScreenScale
+diff --git a/submodules/Components/ReactionButtonListComponent/Sources/ReactionButtonListComponent.swift b/submodules/Components/ReactionButtonListComponent/Sources/ReactionButtonListComponent.swift
+index 36cb9da..b0862f9 100644
+--- a/submodules/Components/ReactionButtonListComponent/Sources/ReactionButtonListComponent.swift
++++ b/submodules/Components/ReactionButtonListComponent/Sources/ReactionButtonListComponent.swift
+@@ -824,7 +824,7 @@ public final class ReactionButtonAsyncNode: ContextControllerSourceView {
+         }
+         
+         static func calculate(spec: Spec, currentLayout: Layout?) -> Layout {
+-            let sideInsets: CGFloat = 11.0
++            let sideInsets: CGFloat = AyuMessagesStyle.isEnabled ? 7.0 : 11.0
+             let height: CGFloat = 30.0
+             let spacing: CGFloat = 2.0
+             
 diff --git a/submodules/Display/Source/AyuAppearancePlus.swift b/submodules/Display/Source/AyuAppearancePlus.swift
 index 037ede6..ac92db6 100644
 --- a/submodules/Display/Source/AyuAppearancePlus.swift
@@ -555,6 +604,38 @@ index b01baa2..d557f9b 100644
              entries.append(.info(3, AyuAppearancePlusRow.relaunchInfo.rawValue, ru ? "⚠️ Перезапустите приложение, чтобы применить стекло и дизайн." : "⚠️ Relaunch the app to apply the glass and design changes."))
          }
          entries.append(.header(4, 34, ru ? "НАСТРОЙКИ" : "SETTINGS"))
+diff --git a/submodules/TabBarUI/Sources/TabBarContollerNode.swift b/submodules/TabBarUI/Sources/TabBarContollerNode.swift
+index 362966c..e6d83c7 100644
+--- a/submodules/TabBarUI/Sources/TabBarContollerNode.swift
++++ b/submodules/TabBarUI/Sources/TabBarContollerNode.swift
+@@ -29,7 +29,8 @@ final class TabBarControllerNode: ASDisplayNode {
+             toolbar: Toolbar?,
+             isTabBarHidden: Bool,
+             currentControllerSearchState: ViewController.TabBarSearchState?,
+-            itemCount: Int
++            itemCount: Int,
++            selectedIndex: Int
+         ) {
+             self.layout = layout
+             self.toolbar = toolbar
+@@ -38,7 +39,7 @@ final class TabBarControllerNode: ASDisplayNode {
+             self.itemCount = itemCount
+             self.ayuLift = min(48.0, max(0.0, (UserDefaults.standard.object(forKey: "ayu.tabBarLift") as? Double ?? 24.0)))
+             self.ayuHideTitles = AyuAppearancePlus.hideTabTitles
+-            self.ayuHidden = AyuWhiteGram.hideBottomTabBar
++            self.ayuHidden = AyuWhiteGram.hideBottomTabBar || (AyuMessagesStyle.isEnabled && itemCount <= 2 && selectedIndex == 0)
+             self.ayuScale = AyuWhiteGram.tabBarScale
+             self.ayuWidth = AyuWhiteGram.tabBarWidth
+         }
+@@ -233,7 +234,7 @@ final class TabBarControllerNode: ASDisplayNode {
+     
+     /// The bottom inset the current tab gets, or nil to leave the tab's own.
+     func containerLayoutUpdated(_ layout: ContainerViewLayout, toolbar: Toolbar?, transition: ContainedViewLayoutTransition) -> CGFloat? {
+-        let params = Params(layout: layout, toolbar: toolbar, isTabBarHidden: self.tabBarHidden, currentControllerSearchState: self.currentController?.tabBarSearchState, itemCount: self.tabBarItems.count)
++        let params = Params(layout: layout, toolbar: toolbar, isTabBarHidden: self.tabBarHidden, currentControllerSearchState: self.currentController?.tabBarSearchState, itemCount: self.tabBarItems.count, selectedIndex: self.selectedIndex)
+         if let layoutResult = self.layoutResult, layoutResult.params == params {
+             return layoutResult.bottomInset
+         } else {
 diff --git a/submodules/TelegramPresentationData/Sources/AyuCustomizedTheme.swift b/submodules/TelegramPresentationData/Sources/AyuCustomizedTheme.swift
 index 78f17ac..34a3d20 100644
 --- a/submodules/TelegramPresentationData/Sources/AyuCustomizedTheme.swift
@@ -667,14 +748,33 @@ index f703e61..fd3ce93 100644
      public init(rank: CachedChannelAdminRank?, isContact: Bool, contentTypeHint: ChatMessageEntryContentType, updatingMedia: ChatUpdatingMessageMedia?, isPlaying: Bool, isCentered: Bool, authorStoryStats: EnginePeerStoryStats?, displayContinueThreadFooter: Bool, pinToTop: Bool, isGiftMessageComposerPreview: Bool = false) {
          self.rank = rank
 diff --git a/submodules/TelegramUI/Components/Chat/ChatMessageBubbleItemNode/Sources/ChatMessageBubbleItemNode.swift b/submodules/TelegramUI/Components/Chat/ChatMessageBubbleItemNode/Sources/ChatMessageBubbleItemNode.swift
-index aed34c5..726a074 100644
+index aed34c5..57a145b 100644
 --- a/submodules/TelegramUI/Components/Chat/ChatMessageBubbleItemNode/Sources/ChatMessageBubbleItemNode.swift
 +++ b/submodules/TelegramUI/Components/Chat/ChatMessageBubbleItemNode/Sources/ChatMessageBubbleItemNode.swift
-@@ -545,7 +545,11 @@ private func mapVisibility(_ visibility: ListViewItemNodeVisibility, boundsSize:
+@@ -484,7 +484,7 @@ private func contentNodeMessagesAndClassesForItem(_ item: ChatMessageItem) -> ([
+         }
+     }
+     
+-    if !reactionsAreInline && !hideAllAdditionalInfo, let reactionsAttribute = item.context.ayuVisibleMessageReactions(message: firstMessage), !reactionsAttribute.reactions.isEmpty {
++    if !reactionsAreInline && !hideAllAdditionalInfo && !ayuShowsTapbacks(item), let reactionsAttribute = item.context.ayuVisibleMessageReactions(message: firstMessage), !reactionsAttribute.reactions.isEmpty {
+         if result.last?.1 == ChatMessageTextBubbleContentNode.self {
+         } else {
+             if result.last?.1 == ChatMessagePollBubbleContentNode.self ||
+@@ -545,7 +545,21 @@ private func mapVisibility(_ visibility: ListViewItemNodeVisibility, boundsSize:
      }
  }
  
 +private let ayuDeliveryCaptionHeight: CGFloat = 16.0
++// How far a tapback rises above its bubble, and how much of it stays over the bubble.
++private let ayuTapbackTopOverhang: CGFloat = 16.0
++private let ayuTapbackOverlap: CGFloat = 14.0
++
++private func ayuShowsTapbacks(_ item: ChatMessageItem) -> Bool {
++    guard AyuMessagesStyle.isEnabled, !item.presentationData.isPreview else {
++        return false
++    }
++    return !item.message.media.contains(where: { $0 is TelegramMediaAction || $0 is TelegramMediaExpiredContent })
++}
 +
  public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewItemNode {
 +    private var ayuDeliveryCaptionNode: ImmediateTextNode?
@@ -682,7 +782,7 @@ index aed34c5..726a074 100644
      public class ContentContainer {
          public let contentMessageStableId: UInt32
          public let sourceNode: ContextExtractedContentContainingNode
-@@ -1597,6 +1601,35 @@ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewI
+@@ -1597,6 +1611,35 @@ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewI
          }
      }
      
@@ -718,7 +818,71 @@ index aed34c5..726a074 100644
      private static func beginLayout(
          selfReference: Weak<ChatMessageBubbleItemNode>,
          item: ChatMessageItem,
-@@ -3764,7 +3797,10 @@ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewI
+@@ -2409,13 +2452,14 @@ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewI
+         let topNodeMergeStatus: ChatMessageBubbleMergeStatus = mergedTop.merged ? (incoming ? .Left : .Right) : .None(incoming ? .Incoming : .Outgoing)
+         var bottomNodeMergeStatus: ChatMessageBubbleMergeStatus = mergedBottom.merged ? (incoming ? .Left : .Right) : .None(incoming ? .Incoming : .Outgoing)
+         
++        let ayuTapbacks = ayuShowsTapbacks(item)
+         let bubbleReactions: ReactionsMessageAttribute
+-        if needReactions || forceReactionsOutside {
++        if needReactions || forceReactionsOutside || ayuTapbacks {
+             bubbleReactions = item.context.ayuVisibleMessageReactions(message: item.message) ?? ReactionsMessageAttribute(canViewList: false, isTags: false, reactions: [], recentPeers: [], topPeers: [])
+         } else {
+             bubbleReactions = ReactionsMessageAttribute(canViewList: false, isTags: false, reactions: [], recentPeers: [], topPeers: [])
+         }
+-        if !bubbleReactions.reactions.isEmpty && !item.presentationData.isPreview {
++        if !bubbleReactions.reactions.isEmpty && !item.presentationData.isPreview && !ayuTapbacks {
+             if incoming {
+                 bottomNodeMergeStatus = .Left
+             } else {
+@@ -3318,6 +3362,7 @@ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewI
+         }
+         
+         var reactionButtonsFinalize: ((CGFloat) -> (CGSize, (_ animation: ListViewItemUpdateAnimation) -> ChatMessageReactionButtonsNode))?
++        var ayuTapbackWidth: CGFloat = 0.0
+         if !bubbleReactions.reactions.isEmpty && !item.presentationData.isPreview {
+             var centerAligned = false
+             for media in item.message.media {
+@@ -3354,7 +3399,11 @@ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewI
+                 constrainedWidth: maximumNodeWidth,
+                 centerAligned: centerAligned
+             ))
+-            maxContentWidth = max(maxContentWidth, minWidth)
++            if ayuTapbacks {
++                ayuTapbackWidth = minWidth
++            } else {
++                maxContentWidth = max(maxContentWidth, minWidth)
++            }
+             reactionButtonsFinalize = buttonsLayout
+         }
+         
+@@ -3705,7 +3754,7 @@ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewI
+             if hasInstantVideo {
+                 maxContentWidth = min(310.0, baseWidth - 84.0)
+             }
+-            reactionButtonsSizeAndApply = reactionButtonsFinalize(maxContentWidth)
++            reactionButtonsSizeAndApply = reactionButtonsFinalize(ayuTapbacks ? ayuTapbackWidth : maxContentWidth)
+         }
+         
+         var suggestedPostInfoNodeLayout: (CGSize, () -> ChatMessageSuggestedPostInfoNode)?
+@@ -3719,6 +3768,9 @@ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewI
+         if let suggestedPostInfoNodeLayout {
+             additionalTopHeight += 4.0 + suggestedPostInfoNodeLayout.0.height + 8.0
+         }
++        if ayuTapbacks && reactionButtonsSizeAndApply != nil {
++            additionalTopHeight += ayuTapbackTopOverhang
++        }
+                 
+         let minimalContentSize: CGSize
+         if hideBackground {
+@@ -3758,13 +3810,16 @@ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewI
+ 
+         var layoutSize = CGSize(width: params.width, height: layoutBubbleSize.height + detachedContentNodesHeight + additionalTopHeight)
+         
+-        if let reactionButtonsSizeAndApply = reactionButtonsSizeAndApply {
++        if let reactionButtonsSizeAndApply = reactionButtonsSizeAndApply, !ayuTapbacks {
+             layoutSize.height += 4.0 + reactionButtonsSizeAndApply.0.height + 2.0
+         }
          if let actionButtonsSizeAndApply = actionButtonsSizeAndApply {
              layoutSize.height += 1.0 + actionButtonsSizeAndApply.0.height
          }
@@ -730,7 +894,7 @@ index aed34c5..726a074 100644
          var layoutInsets = UIEdgeInsets(top: mergedTop.merged ? layoutConstants.bubble.mergedSpacing : layoutConstants.bubble.defaultSpacing, left: 0.0, bottom: mergedBottom.merged ? layoutConstants.bubble.mergedSpacing : layoutConstants.bubble.defaultSpacing, right: 0.0)
          if dateHeaderAtBottom.hasDate && dateHeaderAtBottom.hasTopic {
              layoutInsets.top += layoutConstants.timestampDateAndTopicHeaderHeight
-@@ -3951,6 +3987,7 @@ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewI
+@@ -3951,6 +4006,7 @@ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewI
          strongSelf.currentInputParams = inputParams
          strongSelf.currentApplyParams = applyInfo
          strongSelf.contentLayoutInsets = layoutInsets
@@ -738,8 +902,25 @@ index aed34c5..726a074 100644
          
          if item.message.id.namespace == Namespaces.Message.Local || item.message.id.namespace == Namespaces.Message.ScheduledLocal || item.message.id.namespace == Namespaces.Message.QuickReplyLocal {
              strongSelf.wasPending = true
+@@ -5521,6 +5577,16 @@ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewI
+             if !disablesComments && !incoming {
+                 reactionButtonsFrame.origin.x = backgroundFrame.maxX - reactionButtonsSizeAndApply.0.width - layoutConstants.bubble.contentInsets.left
+             }
++            if ayuShowsTapbacks(item) {
++                let size = reactionButtonsSizeAndApply.0
++                // Over the corner away from the tail, with a page-coloured edge that parts it from the bubble.
++                let originX = incoming ? min(layout.contentSize.width - 4.0 - size.width, backgroundFrame.maxX - size.width + 8.0) : max(4.0, backgroundFrame.minX - 8.0)
++                reactionButtonsFrame = CGRect(origin: CGPoint(x: originX, y: backgroundFrame.minY - size.height + ayuTapbackOverlap), size: size)
++                reactionButtonsNode.layer.shadowColor = (item.presentationData.theme.theme.overallDarkAppearance ? UIColor.black : UIColor.white).cgColor
++                reactionButtonsNode.layer.shadowOpacity = 1.0
++                reactionButtonsNode.layer.shadowRadius = 1.5
++                reactionButtonsNode.layer.shadowOffset = CGSize()
++            }
+             
+             if reactionButtonsNode !== strongSelf.reactionButtonsNode {
+                 strongSelf.reactionButtonsNode = reactionButtonsNode
 diff --git a/submodules/TelegramUI/Components/Chat/ChatMessageDateAndStatusNode/Sources/ChatMessageDateAndStatusNode.swift b/submodules/TelegramUI/Components/Chat/ChatMessageDateAndStatusNode/Sources/ChatMessageDateAndStatusNode.swift
-index 565cdc5..0dbdb5e 100644
+index 565cdc5..69e1c2e 100644
 --- a/submodules/TelegramUI/Components/Chat/ChatMessageDateAndStatusNode/Sources/ChatMessageDateAndStatusNode.swift
 +++ b/submodules/TelegramUI/Components/Chat/ChatMessageDateAndStatusNode/Sources/ChatMessageDateAndStatusNode.swift
 @@ -206,6 +206,12 @@ func packReactionRows(_ itemSizes: [CGSize], width: CGFloat, topInset: CGFloat)
@@ -755,12 +936,17 @@ index 565cdc5..0dbdb5e 100644
  private let ayuDeletedMarkImageCache = Atomic<[String: UIImage]>(value: [:])
  
  /// A trash or eye glyph rendered to a bitmap in the given colour (layers draw `cgImage`,
-@@ -430,6 +436,24 @@ public class ChatMessageDateAndStatusNode: ASDisplayNode {
+@@ -430,6 +436,29 @@ public class ChatMessageDateAndStatusNode: ASDisplayNode {
          let reactionButtonsContainer = self.reactionButtonsContainer
          
          return { [weak self] arguments in
 +            let ayuTimeHidden = ayuMessagesStyleTimeHidden(arguments)
 +            var arguments = arguments
++            // The bubble shows them on its corner instead.
++            if AyuMessagesStyle.isEnabled, case .trailingContent = arguments.layoutInput {
++                arguments.reactions = []
++                arguments.reactionPeers = []
++            }
 +            if ayuTimeHidden {
 +                arguments.dateText = ""
 +                arguments.edited = false
@@ -780,7 +966,7 @@ index 565cdc5..0dbdb5e 100644
              let dateColor: UIColor
              var backgroundImage: UIImage?
              var blurredBackgroundColor: (UIColor, Bool)?
-@@ -629,6 +653,11 @@ public class ChatMessageDateAndStatusNode: ASDisplayNode {
+@@ -629,6 +658,11 @@ public class ChatMessageDateAndStatusNode: ASDisplayNode {
                  }
              }
              
@@ -792,6 +978,344 @@ index 565cdc5..0dbdb5e 100644
              let ayuDeletedMark = AyuDeletedMarkGlyph.split(arguments.dateText)
              var updatedDateText = ayuDeletedMark.text
              if arguments.edited {
+diff --git a/submodules/TelegramUI/Components/Chat/ChatMessageItemView/Sources/ChatMessageItemView.swift b/submodules/TelegramUI/Components/Chat/ChatMessageItemView/Sources/ChatMessageItemView.swift
+index 37a89fc..b071d53 100644
+--- a/submodules/TelegramUI/Components/Chat/ChatMessageItemView/Sources/ChatMessageItemView.swift
++++ b/submodules/TelegramUI/Components/Chat/ChatMessageItemView/Sources/ChatMessageItemView.swift
+@@ -651,7 +651,56 @@ public enum InternalBubbleTapAction {
+     case openContextMenu(OpenContextMenu)
+ }
+ 
++private let ayuTimeRevealFormatter: DateFormatter = {
++    let formatter = DateFormatter()
++    formatter.dateStyle = .none
++    formatter.timeStyle = .short
++    return formatter
++}()
++
+ open class ChatMessageItemView: ListViewItemNode, ChatMessageItemNodeProtocol {
++    private var ayuTimeRevealLabel: UILabel?
++    private var ayuTimeRevealOffset: CGFloat = 0.0
++
++    /// AyuGram Messages style: `offset` points of the chat's left swipe. Outgoing messages move with
++    /// it and incoming ones stay, while the time slides in from the right edge.
++    public func ayuUpdateTimeReveal(offset: CGFloat, transition: ContainedViewLayoutTransition) {
++        guard let item = self.item, !item.message.media.contains(where: { $0 is TelegramMediaAction }) else {
++            return
++        }
++        self.ayuTimeRevealOffset = offset
++        let restingX = self.bounds.width + 8.0
++        let label: UILabel
++        if let current = self.ayuTimeRevealLabel {
++            label = current
++        } else {
++            guard offset > 0.0 else {
++                return
++            }
++            label = UILabel()
++            label.font = Font.regular(11.0)
++            label.textColor = UIColor(rgb: 0x8e8e93)
++            label.text = ayuTimeRevealFormatter.string(from: Date(timeIntervalSince1970: Double(item.message.timestamp)))
++            label.sizeToFit()
++            label.frame = CGRect(origin: CGPoint(x: restingX, y: floorToScreenPixels(self.contentFrame().midY - label.bounds.height * 0.5)), size: label.bounds.size)
++            self.ayuTimeRevealLabel = label
++            self.view.addSubview(label)
++        }
++        let removeLabel: (Bool) -> Void = { [weak self, weak label] _ in
++            guard let self, let label, self.ayuTimeRevealLabel === label, self.ayuTimeRevealOffset == 0.0 else {
++                return
++            }
++            self.ayuTimeRevealLabel = nil
++            label.removeFromSuperview()
++        }
++        let incoming = item.content.effectivelyIncoming(item.context.account.peerId, associatedData: item.associatedData)
++        if incoming {
++            transition.updateFrame(view: label, frame: CGRect(origin: CGPoint(x: restingX - offset, y: label.frame.minY), size: label.bounds.size), completion: offset == 0.0 ? removeLabel : nil)
++        } else {
++            transition.updateSublayerTransformOffset(layer: self.layer, offset: CGPoint(x: -offset, y: 0.0), completion: offset == 0.0 ? removeLabel : nil)
++        }
++    }
++
+     public let layoutConstants = (ChatMessageItemLayoutConstants.compact, ChatMessageItemLayoutConstants.regular)
+     
+     open var item: ChatMessageItem?
+@@ -687,6 +736,10 @@ open class ChatMessageItemView: ListViewItemNode, ChatMessageItemNodeProtocol {
+         self.item = nil
+         self.scrollTiltProvider = nil
+         self.frame = CGRect()
++        self.ayuTimeRevealOffset = 0.0
++        self.ayuTimeRevealLabel?.removeFromSuperview()
++        self.ayuTimeRevealLabel = nil
++        self.layer.sublayerTransform = CATransform3DIdentity
+     }
+     
+     open func setupItem(_ item: ChatMessageItem, synchronousLoad: Bool) {
+diff --git a/submodules/TelegramUI/Components/Chat/ChatMessageReactionsFooterContentNode/Sources/ChatMessageReactionsFooterContentNode.swift b/submodules/TelegramUI/Components/Chat/ChatMessageReactionsFooterContentNode/Sources/ChatMessageReactionsFooterContentNode.swift
+index 80efeeb..4ae44d3 100644
+--- a/submodules/TelegramUI/Components/Chat/ChatMessageReactionsFooterContentNode/Sources/ChatMessageReactionsFooterContentNode.swift
++++ b/submodules/TelegramUI/Components/Chat/ChatMessageReactionsFooterContentNode/Sources/ChatMessageReactionsFooterContentNode.swift
+@@ -68,6 +68,11 @@ public final class MessageReactionButtonsNode: ASDisplayNode {
+         constrainedWidth: CGFloat,
+         type: DisplayType
+     ) -> (proposedWidth: CGFloat, continueLayout: (CGFloat) -> (size: CGSize, apply: (ListViewItemUpdateAnimation) -> Void)) {
++        // AyuGram Messages style: a reaction outside the bubble is a tapback, with no count for one and no avatars.
++        var ayuTapback = false
++        if AyuMessagesStyle.isEnabled, case .freeform = type {
++            ayuTapback = true
++        }
+         let reactionColors: ReactionButtonComponent.Colors
+         let themeColors: PresentationThemeBubbleColorComponents
+         switch type {
+@@ -117,10 +122,10 @@ public final class MessageReactionButtonsNode: ASDisplayNode {
+             }
+             
+             reactionColors = ReactionButtonComponent.Colors(
+-                deselectedBackground: selectReactionFillStaticColor(theme: presentationData.theme.theme, wallpaper: presentationData.theme.wallpaper).argb,
+-                selectedBackground: themeColors.reactionActiveBackground.argb,
+-                deselectedForeground: themeColors.reactionInactiveForeground.argb,
+-                selectedForeground: themeColors.reactionActiveForeground.argb,
++                deselectedBackground: AyuMessagesStyle.isEnabled ? (presentationData.theme.theme.overallDarkAppearance ? 0xff3a3a3c : 0xffe9e9eb) : selectReactionFillStaticColor(theme: presentationData.theme.theme, wallpaper: presentationData.theme.wallpaper).argb,
++                selectedBackground: AyuMessagesStyle.isEnabled ? (presentationData.theme.theme.overallDarkAppearance ? 0xff0a84ff : 0xff007aff) : themeColors.reactionActiveBackground.argb,
++                deselectedForeground: AyuMessagesStyle.isEnabled ? (presentationData.theme.theme.overallDarkAppearance ? 0xffffffff : 0xff000000) : themeColors.reactionInactiveForeground.argb,
++                selectedForeground: AyuMessagesStyle.isEnabled ? 0xffffffff : themeColors.reactionActiveForeground.argb,
+                 selectedIconTintColor: presentationData.theme.theme.overallDarkAppearance ? 0 : presentationData.theme.theme.chat.message.incoming.accentTextColor.argb,
+                 deselectedStarsBackground: selectReactionFillStaticColor(theme: presentationData.theme.theme, wallpaper: presentationData.theme.wallpaper, isStars: true).argb,
+                 selectedStarsBackground: themeColors.reactionStarsActiveBackground.argb,
+@@ -215,8 +220,8 @@ public final class MessageReactionButtonsNode: ASDisplayNode {
+                     animationFileId: animationFileId,
+                     title: title
+                 ),
+-                count: Int(reaction.count),
+-                peers: peers,
++                count: ayuTapback && reaction.count <= 1 ? 0 : Int(reaction.count),
++                peers: ayuTapback ? [] : peers,
+                 chosenOrder: reaction.chosenOrder
+             )
+         }
+diff --git a/submodules/TelegramUI/Components/Chat/ChatSwipeToReplyRecognizer/BUILD b/submodules/TelegramUI/Components/Chat/ChatSwipeToReplyRecognizer/BUILD
+index 0627218..a839a25 100644
+--- a/submodules/TelegramUI/Components/Chat/ChatSwipeToReplyRecognizer/BUILD
++++ b/submodules/TelegramUI/Components/Chat/ChatSwipeToReplyRecognizer/BUILD
+@@ -10,6 +10,7 @@ swift_library(
+         "-warnings-as-errors",
+     ],
+     deps = [
++        "//submodules/Display:Display",
+     ],
+     visibility = [
+         "//visibility:public",
+diff --git a/submodules/TelegramUI/Components/Chat/ChatSwipeToReplyRecognizer/Sources/ChatSwipeToReplyRecognizer.swift b/submodules/TelegramUI/Components/Chat/ChatSwipeToReplyRecognizer/Sources/ChatSwipeToReplyRecognizer.swift
+index a359213..c483389 100644
+--- a/submodules/TelegramUI/Components/Chat/ChatSwipeToReplyRecognizer/Sources/ChatSwipeToReplyRecognizer.swift
++++ b/submodules/TelegramUI/Components/Chat/ChatSwipeToReplyRecognizer/Sources/ChatSwipeToReplyRecognizer.swift
+@@ -1,5 +1,6 @@
+ import Foundation
+ import UIKit
++import Display
+ 
+ public class ChatSwipeToReplyRecognizer: UIPanGestureRecognizer {
+     public var validatedGesture = false
+@@ -22,8 +23,10 @@ public class ChatSwipeToReplyRecognizer: UIPanGestureRecognizer {
+     
+     override public func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
+         super.touchesBegan(touches, with: event)
+-        
+-        if let shouldBegin = self.shouldBegin, !shouldBegin() {
++
++        if AyuMessagesStyle.isEnabled {
++            self.state = .failed
++        } else if let shouldBegin = self.shouldBegin, !shouldBegin() {
+             self.state = .failed
+         } else {
+             let touch = touches.first!
+diff --git a/submodules/TelegramUI/Components/ChatTitleView/Sources/ChatTitleComponent.swift b/submodules/TelegramUI/Components/ChatTitleView/Sources/ChatTitleComponent.swift
+index ba822d3..99b200e 100644
+--- a/submodules/TelegramUI/Components/ChatTitleView/Sources/ChatTitleComponent.swift
++++ b/submodules/TelegramUI/Components/ChatTitleView/Sources/ChatTitleComponent.swift
+@@ -1,5 +1,6 @@
+ import Foundation
+ import UIKit
++import AsyncDisplayKit
+ import Display
+ import ComponentFlow
+ import TelegramPresentationData
+@@ -121,6 +122,8 @@ public final class ChatNavigationBarTitleView: UIView, NavigationBarGlassPillTit
+     
+     public var tapAction: (() -> Void)?
+     public var longTapAction: (() -> Void)?
++    /// AyuGram Messages style: the avatar shown above the name.
++    public var ayuAvatarNode: ASDisplayNode?
+     
+     override public init(frame: CGRect) {
+         super.init(frame: frame)
+@@ -233,7 +236,7 @@ public final class ChatNavigationBarTitleView: UIView, NavigationBarGlassPillTit
+         let transition = ComponentTransition(transition)
+         
+         if let contentData = self.contentData {
+-            let displayBackground: Bool = true
++            let displayBackground: Bool = !AyuMessagesStyle.isEnabled
+             
+             let titleSize = self.title.update(
+                 transition: transition,
+@@ -260,7 +263,9 @@ public final class ChatNavigationBarTitleView: UIView, NavigationBarGlassPillTit
+                             return
+                         }
+                         self.longTapAction?()
+-                    }
++                    },
++                    ayuMessagesLayout: AyuMessagesStyle.isEnabled,
++                    ayuAvatarNode: self.ayuAvatarNode
+                 )),
+                 environment: {},
+                 containerSize: availableSize
+@@ -319,7 +324,9 @@ public final class ChatTitleComponent: Component {
+     public let networkState: AccountNetworkState?
+     public let tapped: () -> Void
+     public let longTapped: () -> Void
+-    
++    public let ayuMessagesLayout: Bool
++    public let ayuAvatarNode: ASDisplayNode?
++
+     public init(
+         context: AccountContext,
+         theme: PresentationTheme,
+@@ -332,7 +339,9 @@ public final class ChatTitleComponent: Component {
+         activities: Activities?,
+         networkState: AccountNetworkState?,
+         tapped: @escaping () -> Void,
+-        longTapped: @escaping () -> Void
++        longTapped: @escaping () -> Void,
++        ayuMessagesLayout: Bool = false,
++        ayuAvatarNode: ASDisplayNode? = nil
+     ) {
+         self.context = context
+         self.theme = theme
+@@ -346,12 +355,20 @@ public final class ChatTitleComponent: Component {
+         self.networkState = networkState
+         self.tapped = tapped
+         self.longTapped = longTapped
++        self.ayuMessagesLayout = ayuMessagesLayout
++        self.ayuAvatarNode = ayuAvatarNode
+     }
+     
+     public static func ==(lhs: ChatTitleComponent, rhs: ChatTitleComponent) -> Bool {
+         if lhs.context !== rhs.context {
+             return false
+         }
++        if lhs.ayuMessagesLayout != rhs.ayuMessagesLayout {
++            return false
++        }
++        if lhs.ayuAvatarNode !== rhs.ayuAvatarNode {
++            return false
++        }
+         if lhs.theme !== rhs.theme {
+             return false
+         }
+@@ -385,6 +402,7 @@ public final class ChatTitleComponent: Component {
+     public final class View: UIView {
+         private var backgroundView: GlassBackgroundView?
+         private let contentContainer: UIView
++        private var ayuChevronView: UIImageView?
+         /// While a navigation transition draws the pill, the pill is hidden and what it shows is lent to the transition
+         /// (`lendGlassPillContent`); it is taken back when the pill is attached again.
+         var isGlassPillDetached: Bool = false {
+@@ -522,7 +540,7 @@ public final class ChatTitleComponent: Component {
+         
+         override init(frame: CGRect) {
+             self.contentContainer = UIView()
+-            self.contentContainer.clipsToBounds = true
++            self.contentContainer.clipsToBounds = !AyuMessagesStyle.isEnabled
+             
+             super.init(frame: frame)
+             
+@@ -1295,12 +1313,25 @@ public final class ChatTitleComponent: Component {
+                 titleRightIconsWidth += statusIconSize.width + statusIconsSpacing
+             }
+             
++            // AyuGram Messages style: a small name under the avatar, and no status line unless someone is typing.
++            let ayuMessagesLayout = component.ayuMessagesLayout
++            var ayuShowsActivity = false
++            if ayuMessagesLayout {
++                switch state {
++                case .none, .info:
++                    break
++                default:
++                    ayuShowsActivity = true
++                }
++            }
++            let ayuAvatarHeight: CGFloat = 38.0
++
+             let maxTitleWidth = availableSize.width - titleLeftIconsWidth - titleRightIconsWidth - containerSideInset * 2.0
+             
+             let titleSize = self.title.update(
+                 transition: transition,
+                 component: AnyComponent(AnimatedTextComponent(
+-                    font: Font.semibold(17.0),
++                    font: ayuMessagesLayout ? Font.medium(12.0) : Font.semibold(17.0),
+                     color: component.theme.chat.inputPanel.panelControlColor,
+                     items: titleSegments,
+                     noDelay: false,
+@@ -1338,10 +1369,17 @@ public final class ChatTitleComponent: Component {
+             contentSize.width = max(min(150.0, availableSize.width - containerSideInset * 2.0), contentSize.width)
+             contentSize.height += subtitleSize.height
+             
+-            let containerSize = CGSize(width: contentSize.width + containerSideInset * 2.0, height: 44.0)
++            let containerSize = CGSize(width: contentSize.width + containerSideInset * 2.0, height: ayuMessagesLayout ? ayuAvatarHeight + titleSize.height : 44.0)
+             let containerFrame = CGRect(origin: CGPoint(x: 0.0, y: floorToScreenPixels((availableSize.height - containerSize.height) * 0.5)), size: containerSize)
+             
+-            let titleFrame = CGRect(origin: CGPoint(x: titleLeftIconsWidth + floor((containerFrame.width - titleSize.width - titleLeftIconsWidth - titleRightIconsWidth) * 0.5), y: floor((containerFrame.height - contentSize.height) * 0.5)), size: titleSize)
++            var titleFrame = CGRect(origin: CGPoint(x: titleLeftIconsWidth + floor((containerFrame.width - titleSize.width - titleLeftIconsWidth - titleRightIconsWidth) * 0.5), y: floor((containerFrame.height - contentSize.height) * 0.5)), size: titleSize)
++            if ayuMessagesLayout {
++                titleFrame.origin.y = ayuAvatarHeight
++                if let titleView = self.title.view {
++                    transition.setAlpha(view: titleView, alpha: ayuShowsActivity ? 0.0 : 1.0)
++                }
++                transition.setAlpha(view: subtitleNode.view, alpha: ayuShowsActivity ? 1.0 : 0.0)
++            }
+             if let titleView = self.title.view {
+                 if titleView.superview == nil {
+                     titleView.isUserInteractionEnabled = false
+@@ -1353,7 +1391,7 @@ public final class ChatTitleComponent: Component {
+                 }
+             }
+             
+-            let subtitleFrame = CGRect(origin: CGPoint(x: floor((containerFrame.width - subtitleSize.width) * 0.5), y: titleFrame.maxY), size: subtitleSize)
++            let subtitleFrame = CGRect(origin: CGPoint(x: floor((containerFrame.width - subtitleSize.width) * 0.5), y: ayuMessagesLayout ? titleFrame.minY : titleFrame.maxY), size: subtitleSize)
+             // Internally, the status view has zero width
+             let subtitleViewFrame = CGRect(origin: CGPoint(x: subtitleFrame.midX, y: subtitleFrame.minY), size: CGSize(width: 0.0, height: subtitleFrame.height))
+             if self.lentExpansionLabels?.status == nil {
+@@ -1450,7 +1488,30 @@ public final class ChatTitleComponent: Component {
+                 transition.setScale(view: rightIconView, scale: 1.0)
+                 nextRightIconX += rightTitleIconSpacing + rightIconSize.width
+             }
+-            
++
++            if ayuMessagesLayout {
++                let chevronView: UIImageView
++                if let current = self.ayuChevronView {
++                    chevronView = current
++                } else {
++                    chevronView = UIImageView(image: UIImage(systemName: "chevron.right", withConfiguration: UIImage.SymbolConfiguration(pointSize: 9.0, weight: .semibold))?.withRenderingMode(.alwaysTemplate))
++                    chevronView.tintColor = UIColor(rgb: 0x8e8e93)
++                    self.ayuChevronView = chevronView
++                    self.contentContainer.addSubview(chevronView)
++                }
++                let chevronSize = chevronView.image?.size ?? CGSize()
++                transition.setFrame(view: chevronView, frame: CGRect(origin: CGPoint(x: nextRightIconX + 3.0, y: titleFrame.midY - chevronSize.height * 0.5), size: chevronSize))
++                transition.setAlpha(view: chevronView, alpha: ayuShowsActivity ? 0.0 : 1.0)
++            }
++            if let avatarNode = component.ayuAvatarNode {
++                if avatarNode.view.superview !== self.contentContainer {
++                    avatarNode.isUserInteractionEnabled = false
++                    self.contentContainer.addSubview(avatarNode.view)
++                }
++                // The node is 44 pt with a 38 pt avatar in the middle.
++                avatarNode.frame = CGRect(x: floorToScreenPixels((containerFrame.width - 44.0) * 0.5), y: -3.0, width: 44.0, height: 44.0)
++            }
++
+             if component.displayBackground {
+                 let backgroundView: GlassBackgroundView
+                 if let current = self.backgroundView {
 diff --git a/submodules/TelegramUI/Sources/ApplicationContext.swift b/submodules/TelegramUI/Sources/ApplicationContext.swift
 index 944f903..21a553a 100644
 --- a/submodules/TelegramUI/Sources/ApplicationContext.swift
@@ -1211,6 +1735,74 @@ index 0000000..6f09f7c
 +        }))
 +    }
 +}
+diff --git a/submodules/TelegramUI/Sources/Chat/UpdateChatPresentationInterfaceState.swift b/submodules/TelegramUI/Sources/Chat/UpdateChatPresentationInterfaceState.swift
+index be09c20..eb0b96c 100644
+--- a/submodules/TelegramUI/Sources/Chat/UpdateChatPresentationInterfaceState.swift
++++ b/submodules/TelegramUI/Sources/Chat/UpdateChatPresentationInterfaceState.swift
+@@ -46,7 +46,27 @@ extension ChatControllerImpl {
+             self.secondaryRightNavigationButton = nil
+         }
+ 
++        // AyuGram Messages style: the avatar is in the title, and a video call takes its place.
++        if AyuMessagesStyle.isEnabled, let button = self.rightNavigationButton, case .openChatInfo = button.action {
++            self.rightNavigationButton = nil
++        }
++
+         var rightBarButtons = [self.rightNavigationButton, self.secondaryRightNavigationButton].compactMap { $0?.buttonItem }
++        if AyuMessagesStyle.isEnabled, case .standard(.default) = self.mode, presentationInterfaceState.interfaceState.selectionState == nil, let peer = presentationInterfaceState.renderedPeer?.peer as? TelegramUser, peer.botInfo == nil, peer.id != self.context.account.peerId {
++            let videoCallButton: UIBarButtonItem
++            if let current = self.ayuVideoCallBarButton {
++                videoCallButton = current
++            } else {
++                videoCallButton = UIBarButtonItem(image: UIImage(systemName: "video", withConfiguration: UIImage.SymbolConfiguration(pointSize: 17.0, weight: .regular))?.withRenderingMode(.alwaysTemplate), style: .plain, target: self, action: #selector(self.ayuVideoCallPressed))
++                videoCallButton.setCustomAction({ [weak self] in
++                    self?.ayuVideoCallPressed()
++                })
++                videoCallButton.accessibilityLabel = presentationInterfaceState.strings.PeerInfo_ButtonVideoCall
++                self.ayuVideoCallBarButton = videoCallButton
++            }
++            videoCallButton.tintColor = presentationInterfaceState.theme.rootController.navigationBar.accentTextColor
++            rightBarButtons.insert(videoCallButton, at: 0)
++        }
+         if case .standard(.default) = self.mode, presentationInterfaceState.interfaceState.selectionState == nil, self.context.account.network.ayuGhostMode.current.appearance.showGhostButton {
+             let settings = self.context.account.network.ayuGhostMode.current
+             let enabled = self.chatLocation.peerId.map { settings.isActive(inPeer: $0.toInt64()) } ?? settings.isActive
+diff --git a/submodules/TelegramUI/Sources/ChatController.swift b/submodules/TelegramUI/Sources/ChatController.swift
+index 9629571..3b1808a 100644
+--- a/submodules/TelegramUI/Sources/ChatController.swift
++++ b/submodules/TelegramUI/Sources/ChatController.swift
+@@ -311,6 +311,7 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
+     var rightNavigationButton: ChatNavigationButton?
+     var secondaryRightNavigationButton: ChatNavigationButton?
+     var ayuGhostBarButton = UIBarButtonItem()
++    var ayuVideoCallBarButton: UIBarButtonItem?
+     var ayuGhostButtonEnabled: Bool?
+     let ayuGhostSettingsDisposable = MetaDisposable()
+     let ayuFormattedCopyDisposable = MetaDisposable()
+@@ -6458,6 +6459,9 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
+             
+             chatInfoButtonItem = UIBarButtonItem(customDisplayNode: avatarNode)!
+             self.avatarNode = avatarNode
++            if AyuMessagesStyle.isEnabled {
++                self.chatTitleView?.ayuAvatarNode = avatarNode
++            }
+         case .customChatContents:
+             chatInfoButtonItem = UIBarButtonItem(title: "", style: .plain, target: nil, action: nil)
+         }
+@@ -8696,6 +8700,13 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
+         }
+     }
+ 
++    @objc func ayuVideoCallPressed() {
++        guard let peerId = self.chatLocation.peerId else {
++            return
++        }
++        self.controllerInteraction?.callPeer(peerId, true)
++    }
++
+     @objc func ayuGhostButtonPressed() {
+         do {
+             let store = self.context.account.network.ayuGhostMode
 diff --git a/submodules/TelegramUI/Sources/ChatHistoryEntriesForView.swift b/submodules/TelegramUI/Sources/ChatHistoryEntriesForView.swift
 index 70c867f..928aff1 100644
 --- a/submodules/TelegramUI/Sources/ChatHistoryEntriesForView.swift
@@ -1272,6 +1864,129 @@ index 70c867f..928aff1 100644
      
      if reverse {
          return (entries.reversed(), currentState)
+diff --git a/submodules/TelegramUI/Sources/ChatHistoryListNode.swift b/submodules/TelegramUI/Sources/ChatHistoryListNode.swift
+index 26809c3..6807350 100644
+--- a/submodules/TelegramUI/Sources/ChatHistoryListNode.swift
++++ b/submodules/TelegramUI/Sources/ChatHistoryListNode.swift
+@@ -2,6 +2,7 @@ import Foundation
+ import UIKit
+ import SwiftSignalKit
+ import Display
++import ChatSwipeToReplyRecognizer
+ import AsyncDisplayKit
+ import TelegramCore
+ import TelegramPresentationData
+@@ -514,6 +515,70 @@ private struct ChatHistoryAnimatedEmojiConfiguration {
+ 
+ private var nextClientId: Int32 = 1
+ 
++/// A one-finger drag to the left. It runs alongside the list's own scrolling.
++private final class AyuTimeRevealRecognizer: UIPanGestureRecognizer, UIGestureRecognizerDelegate {
++    var shouldBegin: (() -> Bool)?
++    private var firstLocation = CGPoint()
++    private var validated = false
++
++    override init(target: Any?, action: Selector?) {
++        super.init(target: target, action: action)
++        self.maximumNumberOfTouches = 1
++        self.delegate = self
++    }
++
++    override func reset() {
++        super.reset()
++        self.validated = false
++    }
++
++    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
++        super.touchesBegan(touches, with: event)
++        if let shouldBegin = self.shouldBegin, !shouldBegin() {
++            self.state = .failed
++            return
++        }
++        guard let touch = touches.first else {
++            return
++        }
++        // A control that takes drags of its own, such as a voice message's scrubber.
++        var current = touch.view
++        while let view = current, view !== self.view {
++            if view.gestureRecognizers?.contains(where: { $0 is UIPanGestureRecognizer && !($0 is ChatSwipeToReplyRecognizer) }) == true {
++                self.state = .failed
++                return
++            }
++            current = view.superview
++        }
++        self.firstLocation = touch.location(in: nil)
++    }
++
++    override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent) {
++        guard let touch = touches.first else {
++            return
++        }
++        if !self.validated {
++            // In window coordinates, because the chat's list is rotated.
++            let location = touch.location(in: nil)
++            let translation = CGPoint(x: location.x - self.firstLocation.x, y: location.y - self.firstLocation.y)
++            if translation.x > 2.0 || (abs(translation.y) > 2.0 && abs(translation.y) > abs(translation.x) * 2.0) {
++                self.state = .failed
++                return
++            }
++            if abs(translation.x) > 2.0 && abs(translation.y) * 2.0 < abs(translation.x) {
++                self.validated = true
++            }
++        }
++        if self.validated {
++            super.touchesMoved(touches, with: event)
++        }
++    }
++
++    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
++        return true
++    }
++}
++
+ public final class ChatHistoryListNodeImpl: ASDisplayNode, ChatHistoryNode, ChatHistoryListNode {
+     static let fixedAdMessageStableId: UInt32 = UInt32.max - 5000
+ 
+@@ -1432,6 +1497,14 @@ public final class ChatHistoryListNodeImpl: ASDisplayNode, ChatHistoryNode, Chat
+         // selection drag scrolls the chat instead of selecting.
+         self.listView.scrollGestureHostView.addGestureRecognizer(selectionRecognizer)
+ 
++        if AyuMessagesStyle.isEnabled, case .bubbles = self.mode {
++            let timeRevealRecognizer = AyuTimeRevealRecognizer(target: self, action: #selector(self.ayuTimeRevealGesture(_:)))
++            timeRevealRecognizer.shouldBegin = { [weak self] in
++                return self?.controllerInteraction.selectionState == nil
++            }
++            self.listView.scrollGestureHostView.addGestureRecognizer(timeRevealRecognizer)
++        }
++
+         self.loadNextGenericReactionEffect(context: context)
+     }
+     
+@@ -3992,6 +4065,24 @@ public final class ChatHistoryListNodeImpl: ASDisplayNode, ChatHistoryNode, Chat
+         return self.liveItemNode(containingMessageId: messageId).flatMap { self.listView.itemNodeRelativeOffset($0) }
+     }
+     
++    @objc private func ayuTimeRevealGesture(_ recognizer: UIPanGestureRecognizer) {
++        switch recognizer.state {
++        case .began, .changed:
++            let distance = max(0.0, -recognizer.translation(in: nil).x)
++            let limit: CGFloat = 64.0
++            let offset = distance <= limit ? distance : limit + (distance - limit) * 0.15
++            self.forEachVisibleMessageItemNode { itemNode in
++                itemNode.ayuUpdateTimeReveal(offset: offset, transition: .immediate)
++            }
++        case .ended, .cancelled, .failed:
++            self.forEachVisibleMessageItemNode { itemNode in
++                itemNode.ayuUpdateTimeReveal(offset: 0.0, transition: .animated(duration: 0.35, curve: .spring))
++            }
++        default:
++            break
++        }
++    }
++
+     public func forEachVisibleMessageItemNode(_ f: (ChatMessageItemView) -> Void) {
+         self.forEachVisibleItemNode { itemNode in
+             if let itemNode = itemNode as? ChatMessageItemView {
 diff --git a/submodules/TelegramUI/Sources/SharedWakeupManager.swift b/submodules/TelegramUI/Sources/SharedWakeupManager.swift
 index b7c6949..778f071 100644
 --- a/submodules/TelegramUI/Sources/SharedWakeupManager.swift

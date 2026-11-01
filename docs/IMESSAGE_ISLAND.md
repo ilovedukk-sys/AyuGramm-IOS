@@ -31,13 +31,9 @@ Done:
 - Dates and service messages as plain gray text.
 - Chat list: 52 pt avatars, a blue unread dot left of the avatar, no counters or checks, and a chevron after the date.
 - A plus instead of the paper clip.
-- Contacts and Calls tabs are hidden by default. Appearance+ can bring them back.
-
-Not done yet:
-
-- The avatar centered above the name in the chat header.
-- Tapback reactions on the bubble corner.
-- Swiping left to reveal message times. Until then, a message's time is in its context menu or message details.
-- Removing the tab bar. Settings needs another way in first.
+- Chat header: the avatar centered above a small name, without the glass pill. A status line appears only while someone is typing. Private chats get a video call button on the right.
+- Reactions are tapbacks on the corner of the bubble. A single reaction shows no count or avatar.
+- Swiping the chat left reveals message times: outgoing messages move aside and incoming ones stay. This replaces swipe to reply, so reply from the message's context menu.
+- No tab bar on the chat list when Contacts and Calls are hidden, which is the default. Appearance+ can bring those tabs back, and the bar with them. A gear in the chat list header opens Settings, where the bar is shown as the way back.
 
 The app icon and name stay AyuGram. Apple's icon is not copied.
