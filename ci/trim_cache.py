@@ -1,8 +1,12 @@
-"""Bound only disposable Bazel cache entries to the personal Codemagic quota."""
+"""Bound only disposable Bazel cache entries to the personal Codemagic quota or to AYU_BAZEL_CACHE_LIMIT."""
 import os
 from pathlib import Path
 
-root = Path(os.environ['CM_BUILD_DIR']).resolve() / '.ayu-temp' / 'ayu-bazel-cache'
+if 'AYU_BAZEL_CACHE' in os.environ:
+    root = Path(os.environ['AYU_BAZEL_CACHE']).resolve()
+else:
+    root = Path(os.environ['CM_BUILD_DIR']).resolve() / '.ayu-temp' / 'ayu-bazel-cache'
+limit = int(os.environ.get('AYU_BAZEL_CACHE_LIMIT', '2500000000'))
 if root.is_dir() and not root.is_symlink():
     entries = []
     for path in root.rglob('*'):
@@ -12,7 +16,7 @@ if root.is_dir() and not root.is_symlink():
     size = sum(entry[2] for entry in entries)
     # Missing CAS entries are cache misses. Never trim workspace outputs or credentials.
     for _, path, length in sorted(entries):
-        if size <= 2_500_000_000:
+        if size <= limit:
             break
         path.unlink(missing_ok=True)
         size -= length

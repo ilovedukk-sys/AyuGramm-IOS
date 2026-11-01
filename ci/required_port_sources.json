@@ -143,5 +143,10 @@
   "submodules/Display/Source/AyuTools.swift",
   "submodules/SettingsUI/Sources/AyuToolsController.swift",
   "submodules/TelegramUI/Sources/AyuOnlineTools.swift",
-  "submodules/TelegramUI/Sources/AyuVoiceChanger.swift"
+  "submodules/TelegramUI/Sources/AyuVoiceChanger.swift",
+  "submodules/AyuLiveActivityAttributes/BUILD",
+  "submodules/AyuLiveActivityAttributes/Sources/AyuActivityAttributes.swift",
+  "submodules/Display/Source/AyuMessagesStyle.swift",
+  "submodules/TelegramUI/Sources/AyuLiveActivities.swift",
+  "Telegram/WidgetKitWidget/AyuLiveActivityWidget.swift"
 ]

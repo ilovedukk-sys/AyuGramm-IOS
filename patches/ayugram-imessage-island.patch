@@ -1,0 +1,1428 @@
+diff --git a/Telegram/BUILD b/Telegram/BUILD
+index 509767b..352134a 100644
+--- a/Telegram/BUILD
++++ b/Telegram/BUILD
+@@ -1292,6 +1292,7 @@ swift_library(
+         "//submodules/BuildConfig:BuildConfig",
+         "//submodules/WidgetItems:WidgetItems_iOS14",
+         "//submodules/WidgetItemsUtils:WidgetItemsUtils",
++        "//submodules/AyuLiveActivityAttributes:AyuLiveActivityAttributes",
+         "//submodules/AppLockState:AppLockState",
+         "//submodules/SSignalKit/SwiftSignalKit:SwiftSignalKit",
+         "//submodules/TelegramCore:TelegramCore",
+@@ -1685,11 +1686,14 @@ plist_fragment(
+     extension = "plist",
+     template = 
+     """
++    <key>NSSupportsLiveActivities</key>
++    <true/>
+     <key>BGTaskSchedulerPermittedIdentifiers</key>
+     <array>
+         <string>{telegram_bundle_id}.refresh</string>
+         <string>{telegram_bundle_id}.cleanup</string>
+         <string>{telegram_bundle_id}.upload.*</string>
++        <string>{telegram_bundle_id}.download.*</string>
+     </array>
+     <key>CFBundleAllowMixedLocalizations</key>
+     <true/>
+diff --git a/Telegram/WidgetKitWidget/AyuLiveActivityWidget.swift b/Telegram/WidgetKitWidget/AyuLiveActivityWidget.swift
+new file mode 100644
+index 0000000..6118f0d
+--- /dev/null
++++ b/Telegram/WidgetKitWidget/AyuLiveActivityWidget.swift
+@@ -0,0 +1,202 @@
++#if arch(arm64) || arch(x86_64)
++
++import SwiftUI
++import WidgetKit
++import ActivityKit
++import AyuLiveActivityAttributes
++
++// The Lock Screen and Dynamic Island look of AyuGram's Live Activities.
++
++@available(iOSApplicationExtension 16.2, iOS 16.2, *)
++private extension AyuActivityKind {
++    var symbolName: String {
++        switch self {
++        case .download:
++            return "arrow.down.circle.fill"
++        case .upload:
++            return "arrow.up.circle.fill"
++        case .call:
++            return "phone.fill"
++        case .groupCall:
++            return "waveform"
++        case .location:
++            return "location.fill"
++        }
++    }
++
++    var tint: Color {
++        switch self {
++        case .download, .upload:
++            return .blue
++        case .call, .groupCall:
++            return .green
++        case .location:
++            return .cyan
++        }
++    }
++}
++
++@available(iOSApplicationExtension 16.2, iOS 16.2, *)
++private struct AyuActivityIcon: View {
++    let kind: AyuActivityKind
++    let state: AyuActivityContentState
++
++    var body: some View {
++        Image(systemName: self.state.isFinished ? "checkmark.circle.fill" : (self.state.isMuted ? "mic.slash.fill" : self.kind.symbolName))
++            .foregroundColor(self.kind.tint)
++    }
++}
++
++@available(iOSApplicationExtension 16.2, iOS 16.2, *)
++private struct AyuActivityRing: View {
++    let progress: Double
++    let tint: Color
++
++    var body: some View {
++        ZStack {
++            Circle()
++                .stroke(self.tint.opacity(0.3), lineWidth: 3.0)
++            Circle()
++                .trim(from: 0.0, to: CGFloat(max(0.02, min(1.0, self.progress))))
++                .stroke(self.tint, style: StrokeStyle(lineWidth: 3.0, lineCap: .round))
++                .rotationEffect(.degrees(-90.0))
++        }
++        .frame(width: 18.0, height: 18.0)
++    }
++}
++
++@available(iOSApplicationExtension 16.2, iOS 16.2, *)
++private struct AyuActivityValue: View {
++    let kind: AyuActivityKind
++    let state: AyuActivityContentState
++    let compact: Bool
++
++    var body: some View {
++        if self.state.isFinished {
++            Image(systemName: "checkmark")
++                .foregroundColor(self.kind.tint)
++        } else if let progress = self.state.progress {
++            if self.compact {
++                AyuActivityRing(progress: progress, tint: self.kind.tint)
++            } else {
++                Text("\(Int((progress * 100.0).rounded()))%")
++                    .font(.system(.body, design: .rounded).weight(.semibold))
++                    .monospacedDigit()
++                    .foregroundColor(self.kind.tint)
++            }
++        } else if let timerStart = self.state.timerStart {
++            Text(timerStart, style: .timer)
++                .monospacedDigit()
++                .multilineTextAlignment(.trailing)
++                .foregroundColor(self.kind.tint)
++                .frame(maxWidth: self.compact ? 48.0 : 64.0)
++        } else if let timerEnd = self.state.timerEnd {
++            Text(timerInterval: Date() ... max(Date(), timerEnd), countsDown: true)
++                .monospacedDigit()
++                .multilineTextAlignment(.trailing)
++                .foregroundColor(self.kind.tint)
++                .frame(maxWidth: self.compact ? 48.0 : 64.0)
++        } else {
++            Image(systemName: self.kind.symbolName)
++                .foregroundColor(self.kind.tint)
++        }
++    }
++}
++
++@available(iOSApplicationExtension 16.2, iOS 16.2, *)
++private struct AyuActivityBar: View {
++    let progress: Double
++    let tint: Color
++
++    var body: some View {
++        GeometryReader { geometry in
++            ZStack(alignment: .leading) {
++                Capsule()
++                    .fill(self.tint.opacity(0.25))
++                Capsule()
++                    .fill(self.tint)
++                    .frame(width: max(6.0, geometry.size.width * CGFloat(max(0.0, min(1.0, self.progress)))))
++            }
++        }
++        .frame(height: 6.0)
++    }
++}
++
++@available(iOSApplicationExtension 16.2, iOS 16.2, *)
++private struct AyuActivityLockScreenView: View {
++    let kind: AyuActivityKind
++    let state: AyuActivityContentState
++
++    var body: some View {
++        VStack(alignment: .leading, spacing: 10.0) {
++            HStack(spacing: 12.0) {
++                AyuActivityIcon(kind: self.kind, state: self.state)
++                    .font(.system(size: 28.0))
++                VStack(alignment: .leading, spacing: 2.0) {
++                    Text(self.state.title)
++                        .font(.headline)
++                        .lineLimit(1)
++                    Text(self.state.subtitle)
++                        .font(.subheadline)
++                        .foregroundColor(.secondary)
++                        .lineLimit(1)
++                }
++                Spacer(minLength: 8.0)
++                AyuActivityValue(kind: self.kind, state: self.state, compact: false)
++            }
++            if let progress = self.state.progress, !self.state.isFinished {
++                AyuActivityBar(progress: progress, tint: self.kind.tint)
++            }
++        }
++        .padding(16.0)
++    }
++}
++
++@available(iOSApplicationExtension 16.2, iOS 16.2, *)
++struct AyuLiveActivityWidget: Widget {
++    var body: some WidgetConfiguration {
++        ActivityConfiguration(for: AyuActivityAttributes.self) { context in
++            AyuActivityLockScreenView(kind: context.attributes.kind, state: context.state)
++        } dynamicIsland: { context in
++            DynamicIsland {
++                DynamicIslandExpandedRegion(.leading) {
++                    AyuActivityIcon(kind: context.attributes.kind, state: context.state)
++                        .font(.system(size: 34.0))
++                }
++                DynamicIslandExpandedRegion(.trailing) {
++                    AyuActivityValue(kind: context.attributes.kind, state: context.state, compact: false)
++                }
++                DynamicIslandExpandedRegion(.center) {
++                    VStack(spacing: 2.0) {
++                        Text(context.state.title)
++                            .font(.headline)
++                            .lineLimit(1)
++                        Text(context.state.subtitle)
++                            .font(.caption)
++                            .foregroundColor(.secondary)
++                            .lineLimit(1)
++                    }
++                }
++                DynamicIslandExpandedRegion(.bottom) {
++                    if let progress = context.state.progress, !context.state.isFinished {
++                        AyuActivityBar(progress: progress, tint: context.attributes.kind.tint)
++                            .padding(.top, 6.0)
++                    }
++                }
++            } compactLeading: {
++                AyuActivityIcon(kind: context.attributes.kind, state: context.state)
++            } compactTrailing: {
++                AyuActivityValue(kind: context.attributes.kind, state: context.state, compact: true)
++            } minimal: {
++                if let progress = context.state.progress, !context.state.isFinished {
++                    AyuActivityRing(progress: progress, tint: context.attributes.kind.tint)
++                } else {
++                    AyuActivityIcon(kind: context.attributes.kind, state: context.state)
++                }
++            }
++            .keylineTint(context.attributes.kind.tint)
++        }
++    }
++}
++
++#endif
+diff --git a/Telegram/WidgetKitWidget/TodayViewController.swift b/Telegram/WidgetKitWidget/TodayViewController.swift
+index 4e3c838..c0452e1 100644
+--- a/Telegram/WidgetKitWidget/TodayViewController.swift
++++ b/Telegram/WidgetKitWidget/TodayViewController.swift
+@@ -941,6 +941,9 @@ struct AllWidgets: WidgetBundle {
+    var body: some Widget {
+         Static_Widget()
+         Static_AvatarsWidget()
++        if #available(iOSApplicationExtension 16.2, iOS 16.2, *) {
++            AyuLiveActivityWidget()
++        }
+    }
+ }
+ 
+diff --git a/submodules/AyuLiveActivityAttributes/BUILD b/submodules/AyuLiveActivityAttributes/BUILD
+new file mode 100644
+index 0000000..1b00245
+--- /dev/null
++++ b/submodules/AyuLiveActivityAttributes/BUILD
+@@ -0,0 +1,17 @@
++load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library")
++
++swift_library(
++    name = "AyuLiveActivityAttributes",
++    module_name = "AyuLiveActivityAttributes",
++    srcs = glob([
++        "Sources/**/*.swift",
++    ]),
++    copts = [
++        "-warnings-as-errors",
++    ],
++    deps = [
++    ],
++    visibility = [
++        "//visibility:public",
++    ],
++)
+diff --git a/submodules/AyuLiveActivityAttributes/Sources/AyuActivityAttributes.swift b/submodules/AyuLiveActivityAttributes/Sources/AyuActivityAttributes.swift
+new file mode 100644
+index 0000000..1240c70
+--- /dev/null
++++ b/submodules/AyuLiveActivityAttributes/Sources/AyuActivityAttributes.swift
+@@ -0,0 +1,46 @@
++import Foundation
++import ActivityKit
++
++// Shared by the app, which starts Live Activities, and the widget extension, which draws them.
++
++public enum AyuActivityKind: String, Codable, Hashable {
++    case download
++    case upload
++    case call
++    case groupCall
++    case location
++}
++
++public struct AyuActivityContentState: Codable, Hashable {
++    public var title: String
++    public var subtitle: String
++    /// 0...1 for a transfer, nil when the activity has no progress.
++    public var progress: Double?
++    /// The moment a call began: the activity counts up from it without further updates.
++    public var timerStart: Date?
++    /// The moment sharing ends: the activity counts down to it without further updates.
++    public var timerEnd: Date?
++    public var isMuted: Bool
++    public var isFinished: Bool
++
++    public init(title: String, subtitle: String, progress: Double? = nil, timerStart: Date? = nil, timerEnd: Date? = nil, isMuted: Bool = false, isFinished: Bool = false) {
++        self.title = title
++        self.subtitle = subtitle
++        self.progress = progress
++        self.timerStart = timerStart
++        self.timerEnd = timerEnd
++        self.isMuted = isMuted
++        self.isFinished = isFinished
++    }
++}
++
++@available(iOS 16.1, *)
++public struct AyuActivityAttributes: ActivityAttributes {
++    public typealias ContentState = AyuActivityContentState
++
++    public let kind: AyuActivityKind
++
++    public init(kind: AyuActivityKind) {
++        self.kind = kind
++    }
++}
+diff --git a/submodules/ChatListUI/Sources/Node/ChatListItem.swift b/submodules/ChatListUI/Sources/Node/ChatListItem.swift
+index b422dfc..bf204d5 100644
+--- a/submodules/ChatListUI/Sources/Node/ChatListItem.swift
++++ b/submodules/ChatListUI/Sources/Node/ChatListItem.swift
+@@ -1438,6 +1438,7 @@ public class ChatListItemNode: ItemListRevealOptionsItemNode {
+     public let separatorNode: ASDisplayNode
+     let statusNode: ChatListStatusNode
+     let badgeNode: ChatListBadgeNode
++    private var ayuChevronView: UIImageView?
+     let mentionBadgeNode: ChatListBadgeNode
+     var avatarBadgeNode: ChatListBadgeNode?
+     var avatarBadgeBackground: ASImageNode?
+@@ -2054,7 +2055,7 @@ public class ChatListItemNode: ItemListRevealOptionsItemNode {
+                 }
+             }
+             
+-            var avatarDiameter = min(60.0, floor(item.presentationData.fontSize.baseDisplaySize * 60.0 / 17.0))
++            var avatarDiameter = min(AyuMessagesStyle.isEnabled ? 52.0 : 60.0, floor(item.presentationData.fontSize.baseDisplaySize * (AyuMessagesStyle.isEnabled ? 52.0 : 60.0) / 17.0))
+             
+             if case let .peer(peerData) = item.content, let customMessageListData = peerData.customMessageListData, customMessageListData.commandPrefix != nil {
+                 avatarDiameter = 40.0
+@@ -2318,10 +2319,10 @@ public class ChatListItemNode: ItemListRevealOptionsItemNode {
+         return { [weak self] item, params, first, last, firstWithHeader, nextIsPinned, nextHasActiveRevealControls in
+             // One snapshot of the AyuGram policy per row layout: every read copies it under a lock.
+             let ayuInterface = item.context.account.network.ayuGhostMode.current.interface
+-            let titleFont = Font.semibold(floor(item.presentationData.fontSize.itemListBaseFontSize * 16.0 / 17.0))
++            let titleFont = Font.semibold(floor(item.presentationData.fontSize.itemListBaseFontSize * (AyuMessagesStyle.isEnabled ? 17.0 : 16.0) / 17.0))
+             let textFont = Font.regular(floor(item.presentationData.fontSize.itemListBaseFontSize * 15.0 / 17.0))
+             let italicTextFont = Font.italic(floor(item.presentationData.fontSize.itemListBaseFontSize * 15.0 / 17.0))
+-            let dateFont = Font.regular(floor(item.presentationData.fontSize.itemListBaseFontSize * 14.0 / 17.0))
++            let dateFont = Font.regular(floor(item.presentationData.fontSize.itemListBaseFontSize * (AyuMessagesStyle.isEnabled ? 15.0 : 14.0) / 17.0))
+             let badgeFont = Font.with(size: floor(item.presentationData.fontSize.itemListBaseFontSize * 12.0 / 17.0), design: .regular, weight: .semibold, traits: [.monospacedNumbers])
+             let avatarBadgeFont = Font.with(size: floor(item.presentationData.fontSize.itemListBaseFontSize * 16.0 / 17.0), design: .regular, weight: .regular, traits: [.monospacedNumbers])
+             
+@@ -2588,7 +2589,7 @@ public class ChatListItemNode: ItemListRevealOptionsItemNode {
+             let enableChatListPhotos = true
+             
+             // if changed, adjust setupItem accordingly
+-            var avatarDiameter = min(60.0, floor(item.presentationData.fontSize.baseDisplaySize * 60.0 / 17.0))
++            var avatarDiameter = min(AyuMessagesStyle.isEnabled ? 52.0 : 60.0, floor(item.presentationData.fontSize.baseDisplaySize * (AyuMessagesStyle.isEnabled ? 52.0 : 60.0) / 17.0))
+             let avatarLeftEdgeInset: CGFloat = item.useCommunityViewLayout ? 10.0 : 16.0
+             let avatarLeftInset: CGFloat
+             
+@@ -2608,6 +2609,7 @@ public class ChatListItemNode: ItemListRevealOptionsItemNode {
+             }
+             
+             let badgeDiameter = floor(item.presentationData.fontSize.baseDisplaySize * 20.0 / 17.0)
++            let ayuUnreadBadgeDiameter: CGFloat = AyuMessagesStyle.isEnabled && useChatListLayout ? 10.0 : badgeDiameter
+             let avatarBadgeDiameter: CGFloat = floor(floor(item.presentationData.fontSize.itemListBaseFontSize * 22.0 / 17.0))
+             let avatarTimerBadgeDiameter: CGFloat = floor(floor(item.presentationData.fontSize.itemListBaseFontSize * 24.0 / 17.0))
+             
+@@ -3442,27 +3444,27 @@ public class ChatListItemNode: ItemListRevealOptionsItemNode {
+                 if unreadCount.muted {
+                     if unreadCount.isProvisonal, case .forum = item.chatListLocation {
+                         badgeTextColor = theme.unreadBadgeInactiveBackgroundColor
+-                        currentBadgeBackgroundImage = PresentationResourcesChatList.badgeBackgroundInactiveProvisional(item.presentationData.theme, diameter: badgeDiameter)
++                        currentBadgeBackgroundImage = PresentationResourcesChatList.badgeBackgroundInactiveProvisional(item.presentationData.theme, diameter: ayuUnreadBadgeDiameter)
+                         currentAvatarBadgeBackgroundImage = PresentationResourcesChatList.badgeBackgroundInactiveProvisional(item.presentationData.theme, diameter: avatarBadgeDiameter)
+                     } else {
+                         badgeTextColor = theme.unreadBadgeInactiveTextColor
+-                        currentBadgeBackgroundImage = PresentationResourcesChatList.badgeBackgroundInactive(item.presentationData.theme, diameter: badgeDiameter)
++                        currentBadgeBackgroundImage = PresentationResourcesChatList.badgeBackgroundInactive(item.presentationData.theme, diameter: ayuUnreadBadgeDiameter)
+                         currentAvatarBadgeBackgroundImage = PresentationResourcesChatList.badgeBackgroundInactive(item.presentationData.theme, diameter: avatarBadgeDiameter)
+                     }
+                 } else {
+                     if unreadCount.isProvisonal, case .forum = item.chatListLocation {
+                         badgeTextColor = theme.unreadBadgeActiveBackgroundColor
+-                        currentBadgeBackgroundImage = PresentationResourcesChatList.badgeBackgroundActiveProvisional(item.presentationData.theme, diameter: badgeDiameter)
++                        currentBadgeBackgroundImage = PresentationResourcesChatList.badgeBackgroundActiveProvisional(item.presentationData.theme, diameter: ayuUnreadBadgeDiameter)
+                         currentAvatarBadgeBackgroundImage = PresentationResourcesChatList.badgeBackgroundActiveProvisional(item.presentationData.theme, diameter: avatarBadgeDiameter)
+                     } else {
+                         badgeTextColor = theme.unreadBadgeActiveTextColor
+-                        currentBadgeBackgroundImage = PresentationResourcesChatList.badgeBackgroundActive(item.presentationData.theme, diameter: badgeDiameter)
++                        currentBadgeBackgroundImage = PresentationResourcesChatList.badgeBackgroundActive(item.presentationData.theme, diameter: ayuUnreadBadgeDiameter)
+                         currentAvatarBadgeBackgroundImage = PresentationResourcesChatList.badgeBackgroundActive(item.presentationData.theme, diameter: avatarBadgeDiameter)
+                     }
+                 }
+                 let unreadCountText = compactNumericCountString(Int(unreadCount.count), decimalSeparator: item.presentationData.dateTimeFormat.decimalSeparator)
+                 // AyuGram "Hide unread counters": an unread chat keeps its dot without a number.
+-                let ayuHideUnreadCounters = ayuInterface.hideUnreadCounters
++                let ayuHideUnreadCounters = ayuInterface.hideUnreadCounters || (AyuMessagesStyle.isEnabled && useChatListLayout)
+                 if unreadCount.count > 0 && !ayuHideUnreadCounters {
+                     badgeContent = .text(NSAttributedString(string: unreadCountText, font: badgeFont, textColor: badgeTextColor))
+                 } else if isPeerGroup {
+@@ -3744,11 +3746,12 @@ public class ChatListItemNode: ItemListRevealOptionsItemNode {
+             
+             let layoutOffset: CGFloat = 0.0
+             
+-            let rawContentWidth = params.width - leftInset - params.rightInset - 18.0 - editingOffset
++            // The Messages style keeps room for a chevron after the date.
++            let rawContentWidth = params.width - leftInset - params.rightInset - 18.0 - editingOffset - (AyuMessagesStyle.isEnabled && useChatListLayout ? 13.0 : 0.0)
+             
+             let (dateLayout, dateApply) = dateLayout(TextNodeLayoutArguments(attributedString: dateAttributedString, backgroundColor: nil, maximumNumberOfLines: 1, truncationType: .end, constrainedSize: CGSize(width: rawContentWidth, height: CGFloat.greatestFiniteMagnitude), alignment: .natural, cutout: nil, insets: UIEdgeInsets()))
+             
+-            let (badgeLayout, badgeApply) = badgeLayout(CGSize(width: rawContentWidth, height: CGFloat.greatestFiniteMagnitude), badgeDiameter, badgeFont, currentBadgeBackgroundImage, badgeContent)
++            let (badgeLayout, badgeApply) = badgeLayout(CGSize(width: rawContentWidth, height: CGFloat.greatestFiniteMagnitude), ayuUnreadBadgeDiameter, badgeFont, currentBadgeBackgroundImage, badgeContent)
+             
+             let (mentionBadgeLayout, mentionBadgeApply) = mentionBadgeLayout(CGSize(width: rawContentWidth, height: CGFloat.greatestFiniteMagnitude), badgeDiameter, badgeFont, currentMentionBadgeImage, mentionBadgeContent)
+             
+@@ -4653,6 +4656,22 @@ public class ChatListItemNode: ItemListRevealOptionsItemNode {
+                     }
+                     
+                     transition.updateFrame(node: strongSelf.dateNode, frame: dateFrame)
++                    if AyuMessagesStyle.isEnabled && useChatListLayout && editingOffset == 0.0 {
++                        let chevronView: UIImageView
++                        if let current = strongSelf.ayuChevronView {
++                            chevronView = current
++                        } else {
++                            chevronView = UIImageView(image: UIImage(systemName: "chevron.right", withConfiguration: UIImage.SymbolConfiguration(pointSize: 12.0, weight: .semibold))?.withRenderingMode(.alwaysTemplate))
++                            strongSelf.ayuChevronView = chevronView
++                            strongSelf.mainContentContainerNode.view.addSubview(chevronView)
++                        }
++                        chevronView.tintColor = item.presentationData.theme.chatList.dateTextColor.withAlphaComponent(0.6)
++                        let chevronSize = chevronView.image?.size ?? CGSize()
++                        transition.updateFrame(view: chevronView, frame: CGRect(origin: CGPoint(x: contentRect.maxX + 5.0, y: dateFrame.midY - chevronSize.height * 0.5), size: chevronSize))
++                    } else if let chevronView = strongSelf.ayuChevronView {
++                        strongSelf.ayuChevronView = nil
++                        chevronView.removeFromSuperview()
++                    }
+                     
+                     var statusOffset: CGFloat = 0.0
+                     if let dateIconImage {
+@@ -4689,15 +4708,23 @@ public class ChatListItemNode: ItemListRevealOptionsItemNode {
+                     
+                     strongSelf.statusNode.frame = CGRect(origin: CGPoint(x: statusX, y: contentRect.origin.y + 2.0 - UIScreenPixel + floor((dateLayout.size.height - statusSize.height) / 2.0)), size: statusSize)
+                     strongSelf.statusNode.fontSize = item.presentationData.fontSize.itemListBaseFontSize
+-                    let _ = strongSelf.statusNode.transitionToState(statusState, animated: animateContent)
++                    let _ = strongSelf.statusNode.transitionToState(AyuMessagesStyle.isEnabled && useChatListLayout ? .none : statusState, animated: animateContent)
+                     
+                     let rightAccessoryVerticalOffset: CGFloat = floorToScreenPixels(-4.0 * min(1.0, item.presentationData.fontSize.itemListBaseFontSize / 17.0))
+                     var nextBadgeX: CGFloat = contentRect.maxX
+                     if let _ = currentBadgeBackgroundImage {
+-                        let badgeFrame = CGRect(x: nextBadgeX - badgeLayout.width, y: contentRect.maxY - badgeLayout.height + rightAccessoryVerticalOffset, width: badgeLayout.width, height: badgeLayout.height)
+-                        
++                        let ayuBadgeBeforeAvatar = AyuMessagesStyle.isEnabled && useChatListLayout
++                        let badgeFrame: CGRect
++                        if ayuBadgeBeforeAvatar {
++                            badgeFrame = CGRect(x: avatarFrame.minX - 13.0, y: avatarFrame.midY - badgeLayout.height * 0.5, width: badgeLayout.width, height: badgeLayout.height)
++                        } else {
++                            badgeFrame = CGRect(x: nextBadgeX - badgeLayout.width, y: contentRect.maxY - badgeLayout.height + rightAccessoryVerticalOffset, width: badgeLayout.width, height: badgeLayout.height)
++                        }
++
+                         transition.updateFrame(node: strongSelf.badgeNode, frame: badgeFrame)
+-                        nextBadgeX -= badgeLayout.width + 6.0
++                        if !ayuBadgeBeforeAvatar {
++                            nextBadgeX -= badgeLayout.width + 6.0
++                        }
+                         
+                         if item.useCommunityViewLayout {
+                             strongSelf.badgeNode.layer.rasterizationScale = UIScreenScale
+diff --git a/submodules/Display/Source/AyuAppearancePlus.swift b/submodules/Display/Source/AyuAppearancePlus.swift
+index 037ede6..ac92db6 100644
+--- a/submodules/Display/Source/AyuAppearancePlus.swift
++++ b/submodules/Display/Source/AyuAppearancePlus.swift
+@@ -62,12 +62,12 @@ public enum AyuAppearancePlus {
+     }
+ 
+     public static var hideContactsTab: Bool {
+-        get { return UserDefaults.standard.bool(forKey: hideContactsKey) }
++        get { return UserDefaults.standard.object(forKey: hideContactsKey) as? Bool ?? AyuMessagesStyle.isEnabled }
+         set { set(newValue, forKey: hideContactsKey) }
+     }
+ 
+     public static var hideCallsTab: Bool {
+-        get { return UserDefaults.standard.bool(forKey: hideCallsKey) }
++        get { return UserDefaults.standard.object(forKey: hideCallsKey) as? Bool ?? AyuMessagesStyle.isEnabled }
+         set { set(newValue, forKey: hideCallsKey) }
+     }
+ 
+diff --git a/submodules/Display/Source/AyuMessagesStyle.swift b/submodules/Display/Source/AyuMessagesStyle.swift
+new file mode 100644
+index 0000000..349bb63
+--- /dev/null
++++ b/submodules/Display/Source/AyuMessagesStyle.swift
+@@ -0,0 +1,24 @@
++import Foundation
++
++/// The look of Apple's Messages app, on by default. Read once per launch, because colours,
++/// bubble images and row layouts are cached; Appearance+ offers the switch.
++public enum AyuMessagesStyle {
++    private static let key = "ayu.appearance.messagesStyle"
++
++    public static var setting: Bool {
++        get {
++            return UserDefaults.standard.object(forKey: key) as? Bool ?? true
++        }
++        set {
++            _ = AyuMessagesStyle.isEnabled
++            UserDefaults.standard.set(newValue, forKey: key)
++            NotificationCenter.default.post(name: AyuAppearancePlus.didChangeNotification, object: nil)
++        }
++    }
++
++    public static let isEnabled: Bool = AyuMessagesStyle.setting
++
++    public static var needsRelaunch: Bool {
++        return AyuMessagesStyle.setting != AyuMessagesStyle.isEnabled
++    }
++}
+diff --git a/submodules/SettingsUI/Sources/AyuAppearancePlusController.swift b/submodules/SettingsUI/Sources/AyuAppearancePlusController.swift
+index b01baa2..d557f9b 100644
+--- a/submodules/SettingsUI/Sources/AyuAppearancePlusController.swift
++++ b/submodules/SettingsUI/Sources/AyuAppearancePlusController.swift
+@@ -17,6 +17,7 @@ private enum AyuAppearancePlusRow: Int32 {
+     case hideTitles = 3
+     case telegramGlass = 11
+     case classicDesign = 21
++    case messagesStyle = 23
+     case noGlass = 22
+     case slowMotion = 25
+     case relaunchInfo = 30
+@@ -93,6 +94,7 @@ func ayuAppearancePlusController(context: AccountContext) -> ViewController {
+         case .telegramGlass: AyuAppearancePlus.glassStyle = value ? .telegram : .system
+         case .classicDesign: AyuAppearancePlus.classicDesign = value
+         case .noGlass: AyuAppearancePlus.noGlass = value
++        case .messagesStyle: AyuMessagesStyle.setting = value
+         default: break
+         }
+     })
+@@ -116,11 +118,12 @@ func ayuAppearancePlusController(context: AccountContext) -> ViewController {
+             .header(2, 10, ru ? "ЖИДКОЕ СТЕКЛО" : "LIQUID GLASS"),
+             .toggle(2, AyuAppearancePlusRow.telegramGlass.rawValue, symbol("drop.fill", 0x32ADE6), ru ? "Стекло Telegram" : "Telegram glass", ru ? (systemGlassAvailable ? "Выключено — системное стекло iOS" : "Системное стекло требует iOS 26") : (systemGlassAvailable ? "Off: the system iOS glass" : "System glass needs iOS 26"), AyuAppearancePlus.glassStyle == .telegram),
+             .header(3, 20, ru ? "ДИЗАЙН" : "DESIGN"),
++            .toggle(3, AyuAppearancePlusRow.messagesStyle.rawValue, symbol("message.fill", 0x34C759), ru ? "Стиль iMessage" : "iMessage style", ru ? "Синие и серые пузыри, чистый фон, подпись «Доставлено» вместо времени." : "Blue and gray bubbles, a plain background, Delivered instead of the time.", AyuMessagesStyle.setting),
+             .toggle(3, AyuAppearancePlusRow.classicDesign.rawValue, symbol("clock.arrow.circlepath", 0xFF2D55), ru ? "Старый дизайн Telegram" : "Classic Telegram design", ru ? "Как Telegram до Liquid Glass: полная нижняя панель и плоские панели без стекла" : "Telegram before Liquid Glass: full-width tab bar and flat panels without glass", AyuAppearancePlus.classicDesign),
+             .toggle(3, AyuAppearancePlusRow.noGlass.rawValue, symbol("square.slash", 0x8E8E93), ru ? "Без стекла" : "No glass", ru ? "Плоские панели везде: папки, чаты, настройки, кнопки" : "Flat panels everywhere: folders, chats, settings, buttons", AyuAppearancePlus.noGlass),
+             .link(3, AyuAppearancePlusRow.slowMotion.rawValue, symbol("tortoise.fill", 0x34C759), ru ? "Slow-Motion анимаций" : "Animation slow motion", AyuAppearancePlus.slowMotionFactor > 1.0 ? String(format: "%.0f×", AyuAppearancePlus.slowMotionFactor) : (ru ? "выкл." : "off"))
+         ]
+-        if AyuAppearancePlus.needsRelaunch {
++        if AyuAppearancePlus.needsRelaunch || AyuMessagesStyle.needsRelaunch {
+             entries.append(.info(3, AyuAppearancePlusRow.relaunchInfo.rawValue, ru ? "⚠️ Перезапустите приложение, чтобы применить стекло и дизайн." : "⚠️ Relaunch the app to apply the glass and design changes."))
+         }
+         entries.append(.header(4, 34, ru ? "НАСТРОЙКИ" : "SETTINGS"))
+diff --git a/submodules/TelegramPresentationData/Sources/AyuCustomizedTheme.swift b/submodules/TelegramPresentationData/Sources/AyuCustomizedTheme.swift
+index 78f17ac..34a3d20 100644
+--- a/submodules/TelegramPresentationData/Sources/AyuCustomizedTheme.swift
++++ b/submodules/TelegramPresentationData/Sources/AyuCustomizedTheme.swift
+@@ -104,3 +104,47 @@ func ayuCustomWallpaper() -> TelegramWallpaper? {
+     }
+     return .color(first)
+ }
++
++private let ayuMessagesLock = NSLock()
++private var ayuMessagesThemes: [Bool: PresentationTheme] = [:]
++
++private func ayuMakeMessagesTheme(from theme: PresentationTheme, dark: Bool) -> PresentationTheme {
++    let accent: UInt32 = dark ? 0x0a84ff : 0x007aff
++    let base = dark ? makeDefaultDarkPresentationTheme(preview: false) : theme
++    var result = customizePresentationTheme(base, editing: false, accentColor: UIColor(rgb: accent), outgoingAccentColor: nil, backgroundColors: [], bubbleColors: [accent], animateBubbleColors: false)
++
++    let page = UIColor(rgb: dark ? 0x000000 : 0xffffff)
++    let gray = UIColor(rgb: 0x8e8e93)
++    let chat = result.chat
++    let message = chat.message.withUpdated(
++        incoming: ayuParted(chat.message.incoming, fill: UIColor(rgb: dark ? 0x262629 : 0xe9e9eb), text: dark ? .white : .black),
++        outgoing: ayuParted(chat.message.outgoing, fill: UIColor(rgb: accent), text: .white)
++    )
++    // Dates and service messages are plain gray text. The fill matches the page, so a date
++    // floating over the bubbles while scrolling stays readable and is invisible otherwise.
++    let serviceComponents = chat.serviceMessage.components.withDefaultWallpaper.withUpdated(fill: page, primaryText: gray, dateFillStatic: page, dateFillFloating: page)
++    let serviceMessage = chat.serviceMessage.withUpdated(
++        components: PresentationThemeServiceMessageColor(withDefaultWallpaper: serviceComponents, withCustomWallpaper: serviceComponents),
++        dateTextColor: PresentationThemeVariableColor(color: gray)
++    )
++    let updatedChat = chat.withUpdated(message: message, serviceMessage: serviceMessage)
++    result = PresentationTheme(name: result.name, index: result.index, referenceTheme: result.referenceTheme, overallDarkAppearance: result.overallDarkAppearance, intro: result.intro, passcode: result.passcode, rootController: result.rootController, list: result.list, chatList: result.chatList, chat: updatedChat, actionSheet: result.actionSheet, contextMenu: result.contextMenu, inAppNotification: result.inAppNotification, chart: result.chart, preview: result.preview)
++    return result
++}
++
++/// The colours of Apple's Messages app, whatever theme is selected. Only its light or dark
++/// appearance counts, so there is one theme of each and its identity never changes.
++func ayuMessagesStyleTheme(_ theme: PresentationTheme) -> PresentationTheme {
++    guard AyuMessagesStyle.isEnabled else {
++        return theme
++    }
++    let dark = theme.overallDarkAppearance
++    ayuMessagesLock.lock()
++    defer { ayuMessagesLock.unlock() }
++    if let cached = ayuMessagesThemes[dark] {
++        return cached
++    }
++    let result = ayuMakeMessagesTheme(from: theme, dark: dark)
++    ayuMessagesThemes[dark] = result
++    return result
++}
+diff --git a/submodules/TelegramPresentationData/Sources/PresentationData.swift b/submodules/TelegramPresentationData/Sources/PresentationData.swift
+index c4ee8cc..f0f5ce8 100644
+--- a/submodules/TelegramPresentationData/Sources/PresentationData.swift
++++ b/submodules/TelegramPresentationData/Sources/PresentationData.swift
+@@ -124,12 +124,12 @@ public final class PresentationData: Equatable {
+     public init(strings: PresentationStrings, theme: PresentationTheme, autoNightModeTriggered: Bool, chatWallpaper: TelegramWallpaper, chatFontSize: PresentationFontSize, chatBubbleCorners: PresentationChatBubbleCorners, listsFontSize: PresentationFontSize, dateTimeFormat: PresentationDateTimeFormat, nameDisplayOrder: PresentationPersonNameOrder, nameSortOrder: PresentationPersonNameOrder, reduceMotion: Bool, largeEmoji: Bool) {
+         self.strings = strings
+         // AyuGram: OLED mode first, then the user's own colours on top.
+-        self.theme = ayuCustomizedTheme(ayuOledModeEnabled ? ayuOledTheme(from: theme) : theme)
++        self.theme = ayuMessagesStyleTheme(ayuCustomizedTheme(ayuOledModeEnabled ? ayuOledTheme(from: theme) : theme))
+         self.autoNightModeTriggered = autoNightModeTriggered
+-        self.chatWallpaper = ayuCustomWallpaper() ?? (ayuOledModeEnabled ? .color(0x000000) : chatWallpaper)
++        self.chatWallpaper = ayuCustomWallpaper() ?? (AyuMessagesStyle.isEnabled ? .color(self.theme.overallDarkAppearance ? 0x000000 : 0xffffff) : (ayuOledModeEnabled ? .color(0x000000) : chatWallpaper))
+         // AyuGram plugin API `ayu.ui.font.set`: message and list text sizes.
+         self.chatFontSize = ayuPluginFontSize("messages") ?? chatFontSize
+-        self.chatBubbleCorners = chatBubbleCorners
++        self.chatBubbleCorners = AyuMessagesStyle.isEnabled ? PresentationChatBubbleCorners(mainRadius: 18.0, auxiliaryRadius: 18.0, mergeBubbleCorners: false, hasTails: true) : chatBubbleCorners
+         self.listsFontSize = ayuPluginFontSize("lists") ?? listsFontSize
+         self.dateTimeFormat = dateTimeFormat
+         self.nameDisplayOrder = nameDisplayOrder
+diff --git a/submodules/TelegramPresentationData/Sources/Resources/PresentationResourcesChat.swift b/submodules/TelegramPresentationData/Sources/Resources/PresentationResourcesChat.swift
+index 71b48d4..c811c72 100644
+--- a/submodules/TelegramPresentationData/Sources/Resources/PresentationResourcesChat.swift
++++ b/submodules/TelegramPresentationData/Sources/Resources/PresentationResourcesChat.swift
+@@ -508,6 +508,9 @@ public struct PresentationResourcesChat {
+     
+     public static func chatInputPanelAttachmentButtonImage(_ theme: PresentationTheme) -> UIImage? {
+         return theme.image(PresentationResourceKey.chatInputPanelAttachmentButtonImage.rawValue, { theme in
++            if AyuMessagesStyle.isEnabled {
++                return UIImage(systemName: "plus", withConfiguration: UIImage.SymbolConfiguration(pointSize: 21.0, weight: .medium))?.withRenderingMode(.alwaysTemplate)
++            }
+             return generateTintedImage(image: UIImage(bundleImageName: "Chat/Input/Text/IconAttachment"), color: .white)?.withRenderingMode(.alwaysTemplate)
+         })
+     }
+diff --git a/submodules/TelegramUI/BUILD b/submodules/TelegramUI/BUILD
+index ceb5318..71159d1 100644
+--- a/submodules/TelegramUI/BUILD
++++ b/submodules/TelegramUI/BUILD
+@@ -276,6 +276,7 @@ swift_library(
+         "//submodules/SoftwareVideo:SoftwareVideo",
+         "//submodules/ManagedFile:ManagedFile",
+         "//submodules/FetchManagerImpl:FetchManagerImpl",
++        "//submodules/AyuLiveActivityAttributes:AyuLiveActivityAttributes",
+         "//submodules/AttachmentUI:AttachmentUI",
+         "//submodules/AttachmentTextInputPanelNode:AttachmentTextInputPanelNode",
+         "//submodules/ChatPresentationInterfaceState:ChatPresentationInterfaceState",
+diff --git a/submodules/TelegramUI/Components/Chat/ChatHistoryEntry/Sources/ChatHistoryEntry.swift b/submodules/TelegramUI/Components/Chat/ChatHistoryEntry/Sources/ChatHistoryEntry.swift
+index f703e61..fd3ce93 100644
+--- a/submodules/TelegramUI/Components/Chat/ChatHistoryEntry/Sources/ChatHistoryEntry.swift
++++ b/submodules/TelegramUI/Components/Chat/ChatHistoryEntry/Sources/ChatHistoryEntry.swift
+@@ -25,6 +25,8 @@ public struct ChatMessageEntryAttributes: Equatable {
+     /// of the album entry it becomes. The entry keeps that identity, so the album replaces it in place
+     /// rather than as a new row (a row held where it was scrolled to would otherwise be lost).
+     public var groupStableId: Int64?
++    /// AyuGram Messages style: the last outgoing message of the chat, captioned "Delivered" or "Read".
++    public var ayuIsLastOutgoing: Bool = false
+     
+     public init(rank: CachedChannelAdminRank?, isContact: Bool, contentTypeHint: ChatMessageEntryContentType, updatingMedia: ChatUpdatingMessageMedia?, isPlaying: Bool, isCentered: Bool, authorStoryStats: EnginePeerStoryStats?, displayContinueThreadFooter: Bool, pinToTop: Bool, isGiftMessageComposerPreview: Bool = false) {
+         self.rank = rank
+diff --git a/submodules/TelegramUI/Components/Chat/ChatMessageBubbleItemNode/Sources/ChatMessageBubbleItemNode.swift b/submodules/TelegramUI/Components/Chat/ChatMessageBubbleItemNode/Sources/ChatMessageBubbleItemNode.swift
+index aed34c5..726a074 100644
+--- a/submodules/TelegramUI/Components/Chat/ChatMessageBubbleItemNode/Sources/ChatMessageBubbleItemNode.swift
++++ b/submodules/TelegramUI/Components/Chat/ChatMessageBubbleItemNode/Sources/ChatMessageBubbleItemNode.swift
+@@ -545,7 +545,11 @@ private func mapVisibility(_ visibility: ListViewItemNodeVisibility, boundsSize:
+     }
+ }
+ 
++private let ayuDeliveryCaptionHeight: CGFloat = 16.0
++
+ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewItemNode {
++    private var ayuDeliveryCaptionNode: ImmediateTextNode?
++
+     public class ContentContainer {
+         public let contentMessageStableId: UInt32
+         public let sourceNode: ContextExtractedContentContainingNode
+@@ -1597,6 +1601,35 @@ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewI
+         }
+     }
+     
++    private func ayuUpdateDeliveryCaption(item: ChatMessageItem, params: ListViewItemLayoutParams, layout: ListViewItemNodeLayout, layoutInsets: UIEdgeInsets) {
++        var text: String?
++        if item.content.firstMessageAttributes.ayuIsLastOutgoing, !item.message.flags.contains(.Failed), !item.message.flags.isSending {
++            let ru = item.presentationData.strings.baseLanguageCode.hasPrefix("ru")
++            if item.read {
++                text = ru ? "Прочитано" : "Read"
++            } else {
++                text = ru ? "Доставлено" : "Delivered"
++            }
++        }
++        guard let text else {
++            self.ayuDeliveryCaptionNode?.removeFromSupernode()
++            self.ayuDeliveryCaptionNode = nil
++            return
++        }
++        let captionNode: ImmediateTextNode
++        if let current = self.ayuDeliveryCaptionNode {
++            captionNode = current
++        } else {
++            captionNode = ImmediateTextNode()
++            captionNode.isUserInteractionEnabled = false
++            self.ayuDeliveryCaptionNode = captionNode
++            self.mainContextSourceNode.contentNode.addSubnode(captionNode)
++        }
++        captionNode.attributedText = NSAttributedString(string: text, font: Font.medium(11.0), textColor: UIColor(rgb: 0x8e8e93))
++        let size = captionNode.updateLayout(CGSize(width: params.width, height: ayuDeliveryCaptionHeight))
++        captionNode.frame = CGRect(origin: CGPoint(x: params.width - params.rightInset - 14.0 - size.width, y: layout.contentSize.height - layoutInsets.bottom - ayuDeliveryCaptionHeight + 2.0), size: size)
++    }
++
+     private static func beginLayout(
+         selfReference: Weak<ChatMessageBubbleItemNode>,
+         item: ChatMessageItem,
+@@ -3764,7 +3797,10 @@ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewI
+         if let actionButtonsSizeAndApply = actionButtonsSizeAndApply {
+             layoutSize.height += 1.0 + actionButtonsSizeAndApply.0.height
+         }
+-        
++        if item.content.firstMessageAttributes.ayuIsLastOutgoing {
++            layoutSize.height += ayuDeliveryCaptionHeight
++        }
++
+         var layoutInsets = UIEdgeInsets(top: mergedTop.merged ? layoutConstants.bubble.mergedSpacing : layoutConstants.bubble.defaultSpacing, left: 0.0, bottom: mergedBottom.merged ? layoutConstants.bubble.mergedSpacing : layoutConstants.bubble.defaultSpacing, right: 0.0)
+         if dateHeaderAtBottom.hasDate && dateHeaderAtBottom.hasTopic {
+             layoutInsets.top += layoutConstants.timestampDateAndTopicHeaderHeight
+@@ -3951,6 +3987,7 @@ public class ChatMessageBubbleItemNode: ChatMessageItemView, ChatMessagePreviewI
+         strongSelf.currentInputParams = inputParams
+         strongSelf.currentApplyParams = applyInfo
+         strongSelf.contentLayoutInsets = layoutInsets
++        strongSelf.ayuUpdateDeliveryCaption(item: item, params: params, layout: layout, layoutInsets: layoutInsets)
+         
+         if item.message.id.namespace == Namespaces.Message.Local || item.message.id.namespace == Namespaces.Message.ScheduledLocal || item.message.id.namespace == Namespaces.Message.QuickReplyLocal {
+             strongSelf.wasPending = true
+diff --git a/submodules/TelegramUI/Components/Chat/ChatMessageDateAndStatusNode/Sources/ChatMessageDateAndStatusNode.swift b/submodules/TelegramUI/Components/Chat/ChatMessageDateAndStatusNode/Sources/ChatMessageDateAndStatusNode.swift
+index 565cdc5..0dbdb5e 100644
+--- a/submodules/TelegramUI/Components/Chat/ChatMessageDateAndStatusNode/Sources/ChatMessageDateAndStatusNode.swift
++++ b/submodules/TelegramUI/Components/Chat/ChatMessageDateAndStatusNode/Sources/ChatMessageDateAndStatusNode.swift
+@@ -206,6 +206,12 @@ func packReactionRows(_ itemSizes: [CGSize], width: CGFloat, topInset: CGFloat)
+     return (positions, CGSize(width: widestRow, height: totalHeight), currentRowWidth)
+ }
+ 
++/// The Messages style shows no time or checks on a bubble. Channel posts keep their views and
++/// time, and saved deleted messages keep their mark.
++private func ayuMessagesStyleTimeHidden(_ arguments: ChatMessageDateAndStatusNode.Arguments) -> Bool {
++    return AyuMessagesStyle.isEnabled && arguments.impressionCount == nil && arguments.replyCount == 0 && AyuDeletedMarkGlyph.split(arguments.dateText).style == nil
++}
++
+ private let ayuDeletedMarkImageCache = Atomic<[String: UIImage]>(value: [:])
+ 
+ /// A trash or eye glyph rendered to a bitmap in the given colour (layers draw `cgImage`,
+@@ -430,6 +436,24 @@ public class ChatMessageDateAndStatusNode: ASDisplayNode {
+         let reactionButtonsContainer = self.reactionButtonsContainer
+         
+         return { [weak self] arguments in
++            let ayuTimeHidden = ayuMessagesStyleTimeHidden(arguments)
++            var arguments = arguments
++            if ayuTimeHidden {
++                arguments.dateText = ""
++                arguments.edited = false
++                switch arguments.type {
++                case .BubbleOutgoing(.Failed), .ImageOutgoing(.Failed), .FreeOutgoing(.Failed):
++                    break
++                case .BubbleOutgoing:
++                    arguments.type = .BubbleIncoming
++                case .ImageOutgoing:
++                    arguments.type = .ImageIncoming
++                case .FreeOutgoing:
++                    arguments.type = .FreeIncoming
++                default:
++                    break
++                }
++            }
+             let dateColor: UIColor
+             var backgroundImage: UIImage?
+             var blurredBackgroundColor: (UIColor, Bool)?
+@@ -629,6 +653,11 @@ public class ChatMessageDateAndStatusNode: ASDisplayNode {
+                 }
+             }
+             
++            if ayuTimeHidden {
++                backgroundImage = nil
++                blurredBackgroundColor = nil
++            }
++
+             let ayuDeletedMark = AyuDeletedMarkGlyph.split(arguments.dateText)
+             var updatedDateText = ayuDeletedMark.text
+             if arguments.edited {
+diff --git a/submodules/TelegramUI/Sources/ApplicationContext.swift b/submodules/TelegramUI/Sources/ApplicationContext.swift
+index 944f903..21a553a 100644
+--- a/submodules/TelegramUI/Sources/ApplicationContext.swift
++++ b/submodules/TelegramUI/Sources/ApplicationContext.swift
+@@ -158,6 +158,7 @@ final class AuthorizedApplicationContext {
+     private var enablePostboxTransactionsDiposable: Disposable?
+     private var ayuStreamerMode: AyuStreamerMode?
+     private var ayuBackgroundNotifications: AyuBackgroundNotifications?
++    private var ayuLiveActivities: AyuLiveActivities?
+ 
+     init(sharedApplicationContext: SharedApplicationContext, mainWindow: Window1, context: AccountContextImpl, accountManager: AccountManager<TelegramAccountManagerTypes>, showCallsTab: Bool, reinitializedNotificationSettings: @escaping () -> Void) {
+         self.sharedApplicationContext = sharedApplicationContext
+@@ -171,6 +172,7 @@ final class AuthorizedApplicationContext {
+         self.context = context
+         self.ayuStreamerMode = AyuStreamerMode(window: mainWindow, context: context)
+         self.ayuBackgroundNotifications = AyuBackgroundNotifications(context: context)
++        self.ayuLiveActivities = AyuLiveActivities(context: context, wakeupManager: sharedApplicationContext.wakeupManager)
+ 
+         // Start the embedded Python plugin runtime (no-op unless this build embeds CPython).
+         AyuPythonBootstrap.shared.install(context: context)
+diff --git a/submodules/TelegramUI/Sources/AyuLiveActivities.swift b/submodules/TelegramUI/Sources/AyuLiveActivities.swift
+new file mode 100644
+index 0000000..6f09f7c
+--- /dev/null
++++ b/submodules/TelegramUI/Sources/AyuLiveActivities.swift
+@@ -0,0 +1,393 @@
++import Foundation
++import UIKit
++import ActivityKit
++import SwiftSignalKit
++import TelegramCore
++import AccountContext
++import FetchManagerImpl
++import TelegramPresentationData
++import TelegramStringFormatting
++import AyuLiveActivityAttributes
++
++@available(iOS 16.2, *)
++private final class AyuActivitySlot {
++    private let kind: AyuActivityKind
++    private var activity: Activity<AyuActivityAttributes>?
++    private var lastState: AyuActivityContentState?
++    private var lastAttempt: Double = 0.0
++
++    init(kind: AyuActivityKind) {
++        self.kind = kind
++    }
++
++    func update(_ state: AyuActivityContentState) {
++        let timestamp = CFAbsoluteTimeGetCurrent()
++        guard let activity = self.activity else {
++            // iOS only starts an activity for an app in the foreground, so a refused start is tried again later.
++            if timestamp < self.lastAttempt + 5.0 || !ActivityAuthorizationInfo().areActivitiesEnabled {
++                return
++            }
++            self.lastAttempt = timestamp
++            do {
++                self.activity = try Activity.request(attributes: AyuActivityAttributes(kind: self.kind), content: ActivityContent(state: state, staleDate: nil), pushType: nil)
++                self.lastState = state
++            } catch let error {
++                Logger.shared.log("AyuGram", "Live Activity not started: \(error)")
++            }
++            return
++        }
++        if state == self.lastState {
++            return
++        }
++        // Progress is sent once a second at most: iOS throttles an activity that updates more often.
++        if let lastState = self.lastState, lastState.title == state.title, lastState.isMuted == state.isMuted, timestamp < self.lastAttempt + 1.0 {
++            return
++        }
++        self.lastAttempt = timestamp
++        self.lastState = state
++        Task {
++            await activity.update(ActivityContent(state: state, staleDate: nil))
++        }
++    }
++
++    func finish(finishedSubtitle: String?) {
++        guard let activity = self.activity else {
++            return
++        }
++        self.activity = nil
++        let lastState = self.lastState
++        self.lastState = nil
++        self.lastAttempt = 0.0
++        Task {
++            if let finishedSubtitle, var state = lastState {
++                state.subtitle = finishedSubtitle
++                state.progress = 1.0
++                state.isFinished = true
++                await activity.end(ActivityContent(state: state, staleDate: nil), dismissalPolicy: .after(Date(timeIntervalSinceNow: 4.0)))
++            } else {
++                await activity.end(nil, dismissalPolicy: .immediate)
++            }
++        }
++    }
++
++    /// Activities left over when the app was closed by the system: nothing updates them any more.
++    static func endLeftovers() {
++        Task {
++            for activity in Activity<AyuActivityAttributes>.activities {
++                await activity.end(nil, dismissalPolicy: .immediate)
++            }
++        }
++    }
++}
++
++/// Shows what the app is doing in the Dynamic Island and on the Lock Screen, as Apple's apps do.
++///
++/// iOS 26 has a system progress UI for long transfers that also keeps the app running after it
++/// is closed, so downloads and uploads use that (SharedWakeupManager). Everything else, and
++/// transfers on older systems, is a Live Activity drawn by the widget extension. A call that
++/// goes through CallKit is left to the system, which already shows it.
++final class AyuLiveActivities {
++    private struct DownloadItem {
++        var size: Int64
++        var name: String?
++        var progress: Double
++    }
++
++    private weak var wakeupManager: SharedWakeupManager?
++    private let context: AccountContextImpl
++    private var slots: [AyuActivityKind: AnyObject] = [:]
++
++    private let downloadsDisposable = MetaDisposable()
++    private let uploadsDisposable = MetaDisposable()
++    private let callDisposable = MetaDisposable()
++    private let groupCallDisposable = MetaDisposable()
++    private let locationDisposable = MetaDisposable()
++
++    private var downloadBatch: [FetchManagerLocationEntryId: DownloadItem] = [:]
++    private var lastDownloadPush: Double = 0.0
++    private var lastDownloadCount: Int = 0
++    private var uploadBatch: [EngineMessage.Id: Float] = [:]
++
++    init(context: AccountContextImpl, wakeupManager: SharedWakeupManager) {
++        self.context = context
++        self.wakeupManager = wakeupManager
++
++        if #available(iOS 16.2, *) {
++            AyuActivitySlot.endLeftovers()
++        }
++        self.observeDownloads()
++        self.observeUploads()
++        self.observeCalls()
++        self.observeLocation()
++    }
++
++    deinit {
++        self.downloadsDisposable.dispose()
++        self.uploadsDisposable.dispose()
++        self.callDisposable.dispose()
++        self.groupCallDisposable.dispose()
++        self.locationDisposable.dispose()
++        self.wakeupManager?.ayuUpdateDownloads(nil)
++    }
++
++    private var presentationData: PresentationData {
++        return self.context.sharedContext.currentPresentationData.with { $0 }
++    }
++
++    private var ru: Bool {
++        return self.presentationData.strings.baseLanguageCode.hasPrefix("ru")
++    }
++
++    private func set(_ kind: AyuActivityKind, _ state: AyuActivityContentState?, finishedSubtitle: String? = nil) {
++        guard #available(iOS 16.2, *) else {
++            return
++        }
++        let slot: AyuActivitySlot
++        if let current = self.slots[kind] as? AyuActivitySlot {
++            slot = current
++        } else {
++            slot = AyuActivitySlot(kind: kind)
++            self.slots[kind] = slot
++        }
++        if let state {
++            slot.update(state)
++        } else {
++            slot.finish(finishedSubtitle: finishedSubtitle)
++        }
++    }
++
++    private func filesString(_ count: Int) -> String {
++        if !self.ru {
++            return count == 1 ? "1 file" : "\(count) files"
++        }
++        let tens = count % 100
++        let ones = count % 10
++        if tens >= 11 && tens <= 14 {
++            return "\(count) файлов"
++        } else if ones == 1 {
++            return "\(count) файл"
++        } else if ones >= 2 && ones <= 4 {
++            return "\(count) файла"
++        } else {
++            return "\(count) файлов"
++        }
++    }
++
++    // MARK: Downloads
++
++    private func observeDownloads() {
++        guard let fetchManager = self.context.fetchManager as? FetchManagerImpl else {
++            return
++        }
++        let engine = self.context.engine
++        self.downloadsDisposable.set((fetchManager.entriesSummary
++        |> mapToSignal { entries -> Signal<[(FetchManagerEntrySummary, Double)], NoError> in
++            let active = entries.filter { !$0.isPaused }
++            if active.isEmpty {
++                return .single([])
++            }
++            return combineLatest(queue: .mainQueue(), active.map { entry -> Signal<(FetchManagerEntrySummary, Double), NoError> in
++                return engine.resources.status(resource: EngineMediaResource(entry.resourceReference.resource))
++                |> map { status -> (FetchManagerEntrySummary, Double) in
++                    switch status {
++                    case .Local:
++                        return (entry, 1.0)
++                    case .Remote:
++                        return (entry, 0.0)
++                    case let .Paused(value):
++                        return (entry, Double(value))
++                    case let .Fetching(_, value):
++                        return (entry, Double(value))
++                    }
++                }
++            })
++        }
++        |> deliverOnMainQueue).startStrict(next: { [weak self] items in
++            self?.updateDownloads(items)
++        }))
++    }
++
++    private func updateDownloads(_ items: [(FetchManagerEntrySummary, Double)]) {
++        if items.isEmpty {
++            let hadItems = !self.downloadBatch.isEmpty
++            self.downloadBatch.removeAll()
++            self.lastDownloadCount = 0
++            self.wakeupManager?.ayuUpdateDownloads(nil)
++            self.set(.download, nil, finishedSubtitle: hadItems ? (self.ru ? "Скачивание завершено" : "Download complete") : nil)
++            return
++        }
++        // Finished files stay in the batch, so the bar keeps moving forward until all of them are done.
++        for key in self.downloadBatch.keys {
++            self.downloadBatch[key]?.progress = 1.0
++        }
++        for (entry, progress) in items {
++            let file = entry.mediaReference?.media as? TelegramMediaFile
++            let size = entry.resourceReference.resource.size ?? file?.size ?? (1024 * 1024)
++            self.downloadBatch[entry.id] = DownloadItem(size: size, name: file?.fileName, progress: progress)
++        }
++
++        var total: Int64 = 0
++        var done: Double = 0.0
++        for item in self.downloadBatch.values {
++            total += item.size
++            done += Double(item.size) * item.progress
++        }
++        let progress = total == 0 ? 0.0 : done / Double(total)
++
++        // At most twice a second, unless the number of files changes.
++        let timestamp = CFAbsoluteTimeGetCurrent()
++        if items.count == self.lastDownloadCount && timestamp < self.lastDownloadPush + 0.5 {
++            return
++        }
++        self.lastDownloadPush = timestamp
++        self.lastDownloadCount = items.count
++
++        let presentationData = self.presentationData
++        let formatting = DataSizeStringFormatting(presentationData: presentationData)
++        let title: String
++        if items.count == 1, let name = (items[0].0.mediaReference?.media as? TelegramMediaFile)?.fileName {
++            title = name
++        } else {
++            title = (self.ru ? "Скачивание: " : "Downloading ") + self.filesString(items.count)
++        }
++        let doneString = dataSizeString(Int64(done), formatting: formatting)
++        let totalString = dataSizeString(total, formatting: formatting)
++        let subtitle = self.ru ? "\(doneString) из \(totalString)" : "\(doneString) of \(totalString)"
++
++        self.wakeupManager?.ayuUpdateDownloads((title: title, subtitle: subtitle, progress: Float(progress)))
++        if self.wakeupManager?.ayuDownloadsUseSystemUI == true {
++            self.set(.download, nil)
++        } else {
++            self.set(.download, AyuActivityContentState(title: title, subtitle: subtitle, progress: progress))
++        }
++    }
++
++    // MARK: Uploads
++
++    private func observeUploads() {
++        // iOS 26 shows media uploads through SharedWakeupManager.
++        if #available(iOS 26.0, *) {
++            return
++        }
++        self.uploadsDisposable.set((self.context.account.pendingMessageManager.pendingMediaUploads
++        |> deliverOnMainQueue).startStrict(next: { [weak self] uploads in
++            self?.updateUploads(uploads)
++        }))
++    }
++
++    private func updateUploads(_ uploads: [EngineMessage.Id: Float]) {
++        if uploads.isEmpty {
++            let hadItems = !self.uploadBatch.isEmpty
++            self.uploadBatch.removeAll()
++            self.set(.upload, nil, finishedSubtitle: hadItems ? (self.ru ? "Отправлено" : "Sent") : nil)
++            return
++        }
++        for key in self.uploadBatch.keys {
++            self.uploadBatch[key] = 1.0
++        }
++        for (id, progress) in uploads {
++            self.uploadBatch[id] = progress
++        }
++        let progress = self.uploadBatch.values.reduce(0.0) { $0 + Double($1) } / Double(self.uploadBatch.count)
++        let title = (self.ru ? "Отправка: " : "Sending ") + self.filesString(uploads.count)
++        self.set(.upload, AyuActivityContentState(title: title, subtitle: "\(Int((progress * 100.0).rounded()))%", progress: progress))
++    }
++
++    // MARK: Calls
++
++    private func observeCalls() {
++        guard let callManager = self.context.sharedContext.callManager else {
++            return
++        }
++        let ru = self.ru
++        self.callDisposable.set((callManager.currentCallSignal
++        |> mapToSignal { call -> Signal<AyuActivityContentState?, NoError> in
++            guard let call, !call.isIntegratedWithCallKit else {
++                return .single(nil)
++            }
++            let title = call.peer?.compactDisplayTitle ?? (ru ? "Звонок" : "Call")
++            return combineLatest(call.state, call.isMuted)
++            |> map { state, isMuted -> AyuActivityContentState? in
++                switch state.state {
++                case let .active(timestamp, _, _):
++                    return AyuActivityContentState(title: title, subtitle: isMuted ? (ru ? "Микрофон выключен" : "Muted") : (ru ? "Звонок" : "Call"), timerStart: Date(timeIntervalSinceReferenceDate: timestamp), isMuted: isMuted)
++                case let .reconnecting(timestamp, _, _):
++                    return AyuActivityContentState(title: title, subtitle: ru ? "Восстановление связи…" : "Reconnecting…", timerStart: Date(timeIntervalSinceReferenceDate: timestamp), isMuted: isMuted)
++                case .waiting, .requesting, .connecting:
++                    return AyuActivityContentState(title: title, subtitle: ru ? "Соединение…" : "Connecting…", isMuted: isMuted)
++                case .ringing:
++                    return AyuActivityContentState(title: title, subtitle: ru ? "Гудки…" : "Ringing…", isMuted: isMuted)
++                case .terminating, .terminated:
++                    return nil
++                }
++            }
++        }
++        |> deliverOnMainQueue).startStrict(next: { [weak self] state in
++            self?.set(.call, state)
++        }))
++
++        self.groupCallDisposable.set((callManager.currentGroupCallSignal
++        |> mapToSignal { call -> Signal<AyuActivityContentState?, NoError> in
++            guard case let .group(groupCall)? = call else {
++                return .single(nil)
++            }
++            let start = Date()
++            let peerTitle: Signal<String?, NoError>
++            if let peerId = groupCall.peerId {
++                peerTitle = groupCall.accountContext.engine.data.get(TelegramEngine.EngineData.Item.Peer.Peer(id: peerId))
++                |> map { peer -> String? in
++                    return peer?.compactDisplayTitle
++                }
++            } else {
++                peerTitle = .single(nil)
++            }
++            return combineLatest(peerTitle, groupCall.isMuted)
++            |> map { title, isMuted -> AyuActivityContentState? in
++                return AyuActivityContentState(title: title ?? (ru ? "Голосовой чат" : "Voice chat"), subtitle: isMuted ? (ru ? "Микрофон выключен" : "Muted") : (ru ? "Вас слышно" : "You are live"), timerStart: start, isMuted: isMuted)
++            }
++        }
++        |> deliverOnMainQueue).startStrict(next: { [weak self] state in
++            self?.set(.groupCall, state)
++        }))
++    }
++
++    // MARK: Live location
++
++    private func observeLocation() {
++        guard let summaryManager = self.context.liveLocationManager?.summaryManager else {
++            return
++        }
++        self.locationDisposable.set((summaryManager.broadcastingToMessages()
++        |> deliverOnMainQueue).startStrict(next: { [weak self] messages in
++            guard let self else {
++                return
++            }
++            guard let message = messages.values.first else {
++                self.set(.location, nil)
++                return
++            }
++            var end: Date?
++            var isIndefinite = false
++            for message in messages.values {
++                for media in message.media {
++                    if let map = media as? TelegramMediaMap, let timeout = map.liveBroadcastingTimeout {
++                        if timeout == liveLocationIndefinitePeriod {
++                            isIndefinite = true
++                        } else {
++                            let date = Date(timeIntervalSince1970: Double(message.timestamp) + Double(timeout))
++                            end = max(end ?? date, date)
++                        }
++                    }
++                }
++            }
++            let peerTitle = message.peers[message.id.peerId].flatMap { EnginePeer($0).compactDisplayTitle }
++            let subtitle: String
++            if messages.count == 1, let peerTitle {
++                subtitle = peerTitle
++            } else {
++                subtitle = (self.ru ? "Чатов: " : "Chats: ") + "\(messages.count)"
++            }
++            self.set(.location, AyuActivityContentState(title: self.ru ? "Геопозиция передаётся" : "Sharing location", subtitle: subtitle, timerEnd: isIndefinite ? nil : end))
++        }))
++    }
++}
+diff --git a/submodules/TelegramUI/Sources/ChatHistoryEntriesForView.swift b/submodules/TelegramUI/Sources/ChatHistoryEntriesForView.swift
+index 70c867f..928aff1 100644
+--- a/submodules/TelegramUI/Sources/ChatHistoryEntriesForView.swift
++++ b/submodules/TelegramUI/Sources/ChatHistoryEntriesForView.swift
+@@ -13,6 +13,45 @@ import Markdown
+ import Display
+ import TelegramStringFormatting
+ 
++private func ayuIsCaptionedOutgoing(_ message: EngineRawMessage) -> Bool {
++    if message.flags.contains(.Incoming) || message.author?.id == message.id.peerId {
++        return false
++    }
++    if message.media.contains(where: { $0 is TelegramMediaAction }) {
++        return false
++    }
++    if let channel = message.peers[message.id.peerId] as? TelegramChannel, case .broadcast = channel.info {
++        return false
++    }
++    return true
++}
++
++/// The entries are in ascending order here.
++private func ayuMarkLastOutgoing(_ entries: inout [ChatHistoryEntry]) {
++    for index in entries.indices.reversed() {
++        switch entries[index] {
++        case let .MessageEntry(message, presentationData, read, location, selection, attributes):
++            if ayuIsCaptionedOutgoing(message) {
++                var attributes = attributes
++                attributes.ayuIsLastOutgoing = true
++                entries[index] = .MessageEntry(message, presentationData, read, location, selection, attributes)
++                return
++            }
++        case let .MessageGroupEntry(groupId, messages, presentationData):
++            if let last = messages.last, ayuIsCaptionedOutgoing(last.0) {
++                entries[index] = .MessageGroupEntry(groupId, messages.map { value in
++                    var attributes = value.3
++                    attributes.ayuIsLastOutgoing = true
++                    return (value.0, value.1, value.2, attributes, value.4)
++                }, presentationData)
++                return
++            }
++        default:
++            break
++        }
++    }
++}
++
+ struct ChatHistoryEntriesForViewState {
+     private var messageStableIdToLocalId: [UInt32: Int64] = [:]
+     
+@@ -918,6 +957,10 @@ func chatHistoryEntriesForView(
+     if isMusicPlaylist && entries.count == 1 {
+         return ([], currentState)
+     }
++
++    if AyuMessagesStyle.isEnabled {
++        ayuMarkLastOutgoing(&entries)
++    }
+     
+     if reverse {
+         return (entries.reversed(), currentState)
+diff --git a/submodules/TelegramUI/Sources/SharedWakeupManager.swift b/submodules/TelegramUI/Sources/SharedWakeupManager.swift
+index b7c6949..778f071 100644
+--- a/submodules/TelegramUI/Sources/SharedWakeupManager.swift
++++ b/submodules/TelegramUI/Sources/SharedWakeupManager.swift
+@@ -111,6 +111,17 @@ public final class SharedWakeupManager {
+     private var backgroundStoryProcessingTaskCancellationRequestedByApp: Bool = false
+     private var pendingBackgroundStoryProcessingTaskTimer: SwiftSignalKit.Timer?
+ 
++    // AyuGram: downloads keep running after the app is closed and appear in the system progress
++    // UI (Dynamic Island, Lock Screen), as media uploads do. The task is requested as soon as a
++    // download starts, because iOS only accepts one reliably from an app in the foreground.
++    private var ayuDownloadState: (title: String, subtitle: String, progress: Float)?
++    private var ayuDownloadTaskId: String?
++    private var ayuDownloadTask: AnyObject?
++    private var ayuNextDownloadTaskId: Int = 0
++    private var ayuDownloadTaskTimer: SwiftSignalKit.Timer?
++    private var ayuDownloadTaskStopped: Bool = false
++    private var ayuDownloadSubmitFailed: Bool = false
++
+     public init(beginBackgroundTask: @escaping (String, @escaping () -> Void) -> UIBackgroundTaskIdentifier?, endBackgroundTask: @escaping (UIBackgroundTaskIdentifier) -> Void, backgroundTimeRemaining: @escaping () -> Double, acquireIdleExtension: @escaping () -> Disposable?, activeAccounts: Signal<(primary: Account?, accounts: [(AccountRecordId, Account)]), NoError>, liveLocationPolling: Signal<AccountRecordId?, NoError>, watchTasks: Signal<AccountRecordId?, NoError>, inForeground: Signal<Bool, NoError>, hasActiveAudioSession: Signal<Bool, NoError>, notificationManager: SharedNotificationManager?, mediaManager: MediaManager, callManager: PresentationCallManager?, accountUserInterfaceInUse: @escaping (AccountRecordId) -> Signal<Bool, NoError>, presentationData: @escaping () -> PresentationData?) {
+         assert(Queue.mainQueue().isCurrent())
+         
+@@ -519,6 +530,106 @@ public final class SharedWakeupManager {
+         }
+     }
+     
++    public var ayuDownloadsUseSystemUI: Bool {
++        guard #available(iOS 26.0, *), self.enableBackgroundTasks, !self.ayuDownloadSubmitFailed, let bundleId = Bundle.main.bundleIdentifier else {
++            return false
++        }
++        // A build signed under another bundle id has no permitted identifier, and registering one would throw.
++        let permitted = Bundle.main.object(forInfoDictionaryKey: "BGTaskSchedulerPermittedIdentifiers") as? [String]
++        return permitted?.contains("\(bundleId).download.*") ?? false
++    }
++
++    public func ayuUpdateDownloads(_ state: (title: String, subtitle: String, progress: Float)?) {
++        self.ayuDownloadState = state
++        guard state != nil else {
++            self.ayuDownloadTaskStopped = false
++            self.ayuDownloadSubmitFailed = false
++            self.ayuDownloadTaskTimer?.invalidate()
++            self.ayuDownloadTaskTimer = nil
++            self.ayuFinishDownloadTask(success: true)
++            return
++        }
++        self.ayuApplyDownloadProgress()
++        if self.ayuDownloadTaskId == nil && self.ayuDownloadTaskTimer == nil && !self.ayuDownloadTaskStopped && self.inForeground && self.ayuDownloadsUseSystemUI {
++            // A file that finishes within a moment does not need any of this.
++            let timer = SwiftSignalKit.Timer(timeout: 1.5, repeat: false, completion: { [weak self] in
++                guard let self else {
++                    return
++                }
++                self.ayuDownloadTaskTimer = nil
++                self.ayuStartDownloadTask()
++            }, queue: .mainQueue())
++            self.ayuDownloadTaskTimer = timer
++            timer.start()
++        }
++    }
++
++    private func ayuApplyDownloadProgress() {
++        guard #available(iOS 26.0, *), let task = self.ayuDownloadTask as? BGContinuedProcessingTask, let state = self.ayuDownloadState else {
++            return
++        }
++        task.progress.totalUnitCount = 1000
++        task.progress.completedUnitCount = Int64(max(0.0, min(1.0, state.progress)) * 1000.0)
++        task.updateTitle(state.title, subtitle: state.subtitle)
++    }
++
++    private func ayuFinishDownloadTask(success: Bool) {
++        guard let taskId = self.ayuDownloadTaskId else {
++            return
++        }
++        self.ayuDownloadTaskId = nil
++        if #available(iOS 26.0, *) {
++            if let task = self.ayuDownloadTask as? BGContinuedProcessingTask {
++                task.setTaskCompleted(success: success)
++            } else {
++                BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: taskId)
++            }
++        }
++        self.ayuDownloadTask = nil
++        self.checkTasks()
++    }
++
++    private func ayuStartDownloadTask() {
++        guard #available(iOS 26.0, *), let state = self.ayuDownloadState, self.ayuDownloadTaskId == nil, let bundleId = Bundle.main.bundleIdentifier else {
++            return
++        }
++        let taskId = "\(bundleId).download.task\(self.ayuNextDownloadTaskId)"
++        self.ayuNextDownloadTaskId += 1
++        BGTaskScheduler.shared.register(forTaskWithIdentifier: taskId, using: nil, launchHandler: { [weak self] task in
++            guard let task = task as? BGContinuedProcessingTask else {
++                return
++            }
++            // Ended by the user or the system. The downloads stay queued and resume with the app.
++            task.expirationHandler = { [weak self] in
++                Queue.mainQueue().async {
++                    guard let self, self.ayuDownloadTaskId == task.identifier else {
++                        return
++                    }
++                    self.ayuDownloadTaskStopped = true
++                    self.ayuFinishDownloadTask(success: false)
++                }
++            }
++            Queue.mainQueue().async {
++                guard let self, self.ayuDownloadTaskId == task.identifier else {
++                    task.setTaskCompleted(success: true)
++                    return
++                }
++                self.ayuDownloadTask = task
++                self.ayuApplyDownloadProgress()
++            }
++        })
++        let request = BGContinuedProcessingTaskRequest(identifier: taskId, title: state.title, subtitle: state.subtitle)
++        request.strategy = .fail
++        do {
++            try BGTaskScheduler.shared.submit(request)
++            self.ayuDownloadTaskId = taskId
++            self.checkTasks()
++        } catch let e {
++            Logger.shared.log("Wakeup", "AyuGram download task not submitted: \(e)")
++            self.ayuDownloadSubmitFailed = true
++        }
++    }
++
+     private func startBackgroundProcessingTaskIfNeeded() {
+         guard #available(iOS 26.0, *) else {
+             return
+@@ -1135,20 +1246,20 @@ public final class SharedWakeupManager {
+     private func updateAccounts(hasTasks: Bool, endTaskAfterTransactionsComplete: UIBackgroundTaskIdentifier?) {
+         let hasBackgroundLocationTask = self.accountsAndTasks.contains(where: { $0.2.backgroundLocation })
+         
+-        if self.inForeground || self.hasActiveAudioSession || self.isInBackgroundExtension || self.backgroundProcessingTaskId != nil || self.backgroundStoryProcessingTaskId != nil || hasBackgroundLocationTask || (hasTasks && self.currentExternalCompletion != nil) || self.activeExplicitExtensionTimer != nil || self.silenceAudioRenderer != nil {
++        if self.inForeground || self.hasActiveAudioSession || self.isInBackgroundExtension || self.backgroundProcessingTaskId != nil || self.backgroundStoryProcessingTaskId != nil || self.ayuDownloadTaskId != nil || hasBackgroundLocationTask || (hasTasks && self.currentExternalCompletion != nil) || self.activeExplicitExtensionTimer != nil || self.silenceAudioRenderer != nil {
+             Logger.shared.log("Wakeup", "enableBeginTransactions: true (active)")
+             
+             for (account, primary, tasks) in self.accountsAndTasks {
+                 account.postbox.setCanBeginTransactions(true)
+                 
+-                if (self.inForeground && primary) || !tasks.isEmpty || (self.activeExplicitExtensionTimer != nil && primary) {
++                if (self.inForeground && primary) || !tasks.isEmpty || (self.activeExplicitExtensionTimer != nil && primary) || self.ayuDownloadTaskId != nil {
+                     account.shouldBeServiceTaskMaster.set(.single(.always))
+                 } else {
+                     account.shouldBeServiceTaskMaster.set(.single(.never))
+                 }
+-                account.shouldExplicitelyKeepWorkerConnections.set(.single(tasks.backgroundAudio || tasks.backgroundLocation || tasks.importantTasks.pendingStoryCount != 0 || tasks.importantTasks.pendingMessageCount != 0))
++                account.shouldExplicitelyKeepWorkerConnections.set(.single(tasks.backgroundAudio || tasks.backgroundLocation || tasks.importantTasks.pendingStoryCount != 0 || tasks.importantTasks.pendingMessageCount != 0 || self.ayuDownloadTaskId != nil))
+                 account.shouldKeepOnlinePresence.set(.single(primary && self.inForeground))
+-                account.shouldKeepBackgroundDownloadConnections.set(.single(tasks.backgroundDownloads))
++                account.shouldKeepBackgroundDownloadConnections.set(.single(tasks.backgroundDownloads || self.ayuDownloadTaskId != nil))
+             }
+             
+             if let endTaskAfterTransactionsComplete {

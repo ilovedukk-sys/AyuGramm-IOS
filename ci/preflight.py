@@ -119,6 +119,36 @@ def main():
                 errors.append(f'{path.name} SDK type check:\n{result.stdout}{result.stderr}')
             else:
                 print(f'PASS: actual {path.name} type-checked against the iOS Simulator SDK')
+        # The Live Activity widget and its attributes against the real WidgetKit and ActivityKit,
+        # with the same widget bundle form as TodayViewController.swift.
+        attributes = source / 'submodules/AyuLiveActivityAttributes/Sources/AyuActivityAttributes.swift'
+        widget = source / 'Telegram/WidgetKitWidget/AyuLiveActivityWidget.swift'
+        if attributes.exists() and widget.exists():
+            with tempfile.TemporaryDirectory(prefix='ayu-activity-sdk-') as directory:
+                flags = ['xcrun', 'swiftc', '-swift-version', '5', '-warnings-as-errors',
+                         '-sdk', sdk, '-target', 'arm64-apple-ios15.0-simulator']
+                bundle = Path(directory) / 'Bundle.swift'
+                bundle.write_text('\n'.join([
+                    'import WidgetKit',
+                    '@available(iOS 14.0, *)',
+                    'struct AyuBundleCheck: WidgetBundle {',
+                    '    var body: some Widget {',
+                    '        if #available(iOS 16.2, *) {',
+                    '            AyuLiveActivityWidget()',
+                    '        }',
+                    '    }',
+                    '}',
+                ]), encoding='utf-8')
+                result = subprocess.run([*flags, '-emit-module', '-module-name', 'AyuLiveActivityAttributes',
+                                         '-emit-module-path', str(Path(directory) / 'AyuLiveActivityAttributes.swiftmodule'),
+                                         str(attributes)], capture_output=True, text=True)
+                if not result.returncode:
+                    result = subprocess.run([*flags, '-typecheck', '-I', directory, str(widget), str(bundle)],
+                                            capture_output=True, text=True)
+                if result.returncode:
+                    errors.append(f'Live Activity widget SDK check:\n{result.stdout}{result.stderr}')
+                else:
+                    print('PASS: Live Activity widget type-checked against the iOS Simulator SDK')
         # Model-only harness from real source, without Telegram network/database stubs.
         # It checks the actual plugin manager against UIKit and actual model signatures.
         manager = source / 'submodules/SettingsUI/Sources/AyuPluginManagerController.swift'
