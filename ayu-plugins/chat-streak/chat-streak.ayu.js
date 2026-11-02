@@ -3,10 +3,10 @@
 // @name Chat Streak
 // @name:ru Огонёк
 // @author @your_telegram
-// @version 1.0
+// @version 1.1
 // @description TikTok-style chat streaks: 🔥 N means you and your contact have both written to each other N days in a row.
 // @description:ru Огонёк как в TikTok: 🔥 N — сколько дней подряд вы с собеседником оба писали друг другу.
-// @permissions messages.read, badges, profile, ui, commands, overlay
+// @permissions messages.read, badges, profile, overlay
 // @tags chats, fun
 // ==/AyuPlugin==
 'use strict';
@@ -80,8 +80,8 @@ ayu.settings.declare([
         key: 'about', type: 'preview',
         title: t('Как это работает', 'How it works'),
         subtitle: t(
-            'День засчитывается, если в этот день писали и вы, и собеседник. ⏳ — сегодня ещё не переписывались, огонёк погаснет в полночь. Огонёк считается только на этом устройстве, собеседник его не видит. Команда .streak в чате показывает подробности.',
-            'A day counts when both you and the contact wrote that day. ⏳ means you haven’t talked today yet and the streak ends at midnight. Streaks are counted on this device only; the contact doesn’t see them. Type .streak in a chat for details.'
+            'День засчитывается, если в этот день писали и вы, и собеседник. ⏳ — сегодня ещё не переписывались, огонёк погаснет в полночь. Огонёк считается только на этом устройстве, собеседник его не видит.',
+            'A day counts when both you and the contact wrote that day. ⏳ means you haven’t talked today yet and the streak ends at midnight. Streaks are counted on this device only; the contact doesn’t see them.'
         )
     }
 ]);
@@ -358,32 +358,11 @@ function toggleMute(peerId) {
     if (!state.muted[peerId]) schedule(peerId, true);
 }
 
-function showInfo(peerId) {
-    ayu.ui.alert({
-        title: t('🔥 Огонёк', '🔥 Streak'),
-        message: describe(peerId),
-        buttons: [
-            { id: 'ok', title: 'OK', style: 'default' },
-            {
-                id: 'mute',
-                title: state.muted[peerId] ? t('Снова считать в этом чате', 'Count in this chat again') : t('Не считать в этом чате', 'Stop counting in this chat'),
-                style: state.muted[peerId] ? 'default' : 'destructive'
-            }
-        ]
-    }, (choice) => { if (choice === 'mute') toggleMute(peerId); });
-}
-
 // ---------- События ----------
-
-ayu.commands.register('streak', t('Огонёк этого чата', 'Streak in this chat'), (args, ctx) => {
-    const peerId = ctx && ctx.peerId;
-    if (peerId !== undefined && peerId !== null) schedule(peerId, true).then(() => showInfo(String(peerId)));
-    return null; // сама команда не отправляется
-});
 
 ayu.hooks.after(ayu.hooks.points.outgoingText, (value, ctx) => {
     // Хук должен ответить быстро: только откладываем пересчёт, пока сообщение уйдёт.
-    if (value !== '\u0000' && ctx && ctx.peerId !== undefined && !ctx.isSecret) {
+    if (ctx && ctx.peerId !== undefined && !ctx.isSecret) {
         const peerId = ctx.peerId;
         setTimeout(() => schedule(peerId, true), 1500);
     }

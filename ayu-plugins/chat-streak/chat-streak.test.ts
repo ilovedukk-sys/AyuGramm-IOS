@@ -200,12 +200,11 @@ test("after the warning hour a pending streak raises one toast per day", async (
   s.dispose();
 });
 
-test(".streak is not sent and shows the chat's streak; the mute button stops counting", async () => {
+test("the profile button stops and resumes counting for a chat", async () => {
   const s = start({ "100": history("100", mutual(0, 2)) });
-  assert.equal(s.send(".streak", { peerId: "100" }), null);
+  s.emit("chatOpen", { peerId: "100" });
   await settle();
-  const alert = calls(s, "ui.alert").pop();
-  assert.match(alert.message, /3 дня подряд/);
+  assert.equal(lastBadge(s, "100"), "🔥 3");
 
   s.emit("profileOpen", { peerId: "100" });
   const button = calls(s, "ui.profile.addButton").pop();
@@ -215,7 +214,16 @@ test(".streak is not sent and shows the chat's streak; the mute button stops cou
   assert.deepEqual(calls(s, "ui.badge.remove").pop(), { peerId: "100" });
   assert.equal(stored(s).muted["100"], true);
   assert.equal(calls(s, "ui.profile.addButton").pop().title, "Снова считать огонёк");
-  s.dispose();
+
+  s.emit("profileButton", { buttonId: button.id, peerId: "100" });
+  await settle();
+  assert.equal(lastBadge(s, "100"), "🔥 3");
+});
+
+test("the plugin registers no dot commands", () => {
+  const s = start({});
+  assert.equal(calls(s, "commands.register").length, 0);
+  assert.equal(s.send(".streak", { peerId: "100" }), ".streak");
 });
 
 test("sending a message re-counts the chat shortly after", async () => {
