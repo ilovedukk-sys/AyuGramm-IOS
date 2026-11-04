@@ -1,0 +1,28 @@
+{
+  "vgtheme": 1,
+  "id": "oled-violet",
+  "name": { "en": "OLED Violet", "ru": "OLED фиолетовая" },
+  "author": "VoidGram",
+  "description": "True black for OLED screens with violet accents.",
+  "base": "night",
+  "accent": "#A47BFF",
+  "colors": {
+    "background": "#000000",
+    "surface": "#0E0E10",
+    "separator": "#1C1C20",
+    "navBar.background": "#000000",
+    "tabBar.background": "#000000",
+    "input.background": "#000000",
+    "input.field": "#121214",
+    "outgoing.bubble": "#2A1F48",
+    "outgoing.text": "#FFFFFF",
+    "incoming.bubble": "#141416",
+    "incoming.text": "#FFFFFF",
+    "service.background": "alpha(#1C1C20, 0.9)"
+  },
+  "native": {
+    "chat.message.outgoing.bubble.withWp.stroke": "transparent",
+    "chat.message.incoming.bubble.withWp.stroke": "transparent"
+  },
+  "wallpaper": "#000000"
+}

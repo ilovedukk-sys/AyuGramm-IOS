@@ -125,6 +125,7 @@ console error.
 | `ayu.ui.overlay.create({ id, effect, amount, speed, color })` / `update(id, …)` / `remove(id)` | `overlay` | particles over the whole app: `snow`, `leaves`, `rain`, `stars`, `confetti`; `amount`/`speed` 0.1–3; never takes touches, paused by Reduce Motion |
 | `ayu.ui.overlay.addText({ id, text, anchor, size, color })` | `overlay` | text pinned to `topLeft`, `topRight`, `bottomLeft`, `bottomRight` or `center` |
 | `ayu.ui.font.set({ element, size })` / `reset(element)` | `fonts` | `messages` or `lists` text size in points (12–30), applied when the appearance is rebuilt |
+| `ayu.ui.theme.list()` / `active()` / `apply(id)` / `reset()` / `install(themeOrJson)` | `themes` | VoidGram themes (.vgtheme): list them, switch, go back to Telegram's look, install one after the same checks as a file import ([format](THEME_ENGINE_RU.md)) |
 | `ayu.ui.badge.add({ peerId, badge: { text } })` / `remove({ peerId })` | `badges` | badge beside a chat's name in the chat list |
 | `ayu.media.cutOutSticker(peerId, messageId)` → Promise | `messages` | lifts the subject off the message's photo and sends it as a sticker to the open chat (iOS 17) |
 | `ayu.media.describePhoto(peerId, messageId)` → Promise<string or null> | `messages.read` | on-device description and text of the message's photo |

@@ -76,6 +76,17 @@ declare namespace Ayu {
     avatar: { decorate(peerId: string, emoji: string): void; clear(peerId: string): void };
     /** A colour or two-colour gradient over the chat wallpaper, under the messages (permission `overlay`). */
     chatBackground: { set(options: { colors: string[]; alpha?: number }): void; reset(): void };
+    /** VoidGram themes (.vgtheme, docs/THEME_ENGINE_RU.md); permission `themes`. */
+    theme: {
+        list(): { id: string; name: string; names: Record<string, string>; author: string; builtin: boolean; active: boolean }[];
+        /** The active theme's id, or null for Telegram's own look. */
+        active(): string | null;
+        /** Switches theme; null or "" returns to Telegram's look. */
+        apply(id: string | null): { ok: boolean; error?: string };
+        reset(): { ok: boolean };
+        /** Checks and installs a theme (object or JSON text); the same id replaces it, built-in ids are refused. */
+        install(theme: object | string): { ok: boolean; id?: string; error?: string };
+    };
     /** A button over the whole app; the callback runs on tap (permission `overlay`). */
     floatingButton: { add(options: { id: string; icon?: string; title?: string; anchor?: "bottomRight" | "bottomLeft" | "topRight" | "topLeft"; color?: string }, onTap?: () => void): boolean; remove(id: string): void };
     progress: { show(options: { id: string; title?: string; value: number; anchor?: string }): void; hide(id: string): void };

@@ -1,0 +1,66 @@
+{
+  "vgtheme": 1,
+  "id": "void-graphite",
+  "name": { "en": "Void Graphite", "ru": "Void Графит" },
+  "author": "VoidGram",
+  "description": "The VoidGram mark's graphite and violet: dark at night, soft grey by day.",
+  "accent": "$violet",
+  "vars": {
+    "violet": "#8E5CF7"
+  },
+  "variants": {
+    "dark": {
+      "vars": {
+        "bg": "#0B0B0F",
+        "surface": "#16161C",
+        "text": "#ECECF1",
+        "muted": "#8A8A96"
+      },
+      "colors": {
+        "background": "$bg",
+        "surface": "$surface",
+        "separator": "mix($surface, $text, 0.08)",
+        "text": "$text",
+        "secondaryText": "$muted",
+        "highlight": "mix($surface, $violet, 0.18)",
+        "navBar.background": "alpha($bg, 0.92)",
+        "tabBar.background": "alpha($bg, 0.92)",
+        "tabBar.icon": "$muted",
+        "tabBar.selected": "$violet",
+        "search.background": "$surface",
+        "chatList.pinned": "mix($bg, $violet, 0.06)",
+        "chatList.muted": "#3A3A44",
+        "outgoing.bubble": "#5B3FA8",
+        "outgoing.bubbleGradient": "#7B4FD6",
+        "outgoing.text": "#FFFFFF",
+        "outgoing.secondaryText": "alpha(#FFFFFF, 0.65)",
+        "outgoing.link": "#E3D6FF",
+        "outgoing.accent": "#E3D6FF",
+        "outgoing.check": "#E3D6FF",
+        "incoming.bubble": "#1E1E26",
+        "incoming.text": "$text",
+        "incoming.secondaryText": "$muted",
+        "incoming.link": "#B79CFF",
+        "incoming.accent": "#B79CFF",
+        "service.background": "alpha(#000000, 0.45)",
+        "input.background": "alpha($bg, 0.94)",
+        "input.field": "$surface",
+        "input.accent": "$violet",
+        "input.sendIcon": "#FFFFFF"
+      },
+      "wallpaper": { "colors": ["#0B0B0F", "#161226", "#0E0B1A", "#1A1430"], "rotation": 0 }
+    },
+    "light": {
+      "colors": {
+        "background": "#F2F2F6",
+        "outgoing.bubble": "#E6DCFA",
+        "outgoing.text": "#1E1240",
+        "outgoing.secondaryText": "alpha(#1E1240, 0.55)",
+        "outgoing.check": "$violet",
+        "incoming.bubble": "#FFFFFF",
+        "tabBar.selected": "$violet"
+      },
+      "wallpaper": ["#EEEAF8", "#F7F5FC"]
+    }
+  }
+}

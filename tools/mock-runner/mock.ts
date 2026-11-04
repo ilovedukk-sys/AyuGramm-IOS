@@ -76,7 +76,7 @@ export class Sandbox {
 
   constructor(options: SandboxOptions) {
     this.options = options;
-    this.permissions = new Set(options.permissions ?? ["ui", "menu", "profile", "overlay", "fonts", "badges", "clipboard", "device", "haptics", "network", "messages", "ai", "secrets", "composer", "commands", "screens", "links", "notifications"]);
+    this.permissions = new Set(options.permissions ?? ["ui", "menu", "profile", "overlay", "fonts", "badges", "clipboard", "device", "haptics", "network", "messages", "ai", "secrets", "composer", "commands", "screens", "links", "notifications", "themes"]);
     const pluginId = options.pluginId ?? "test-plugin";
     const host = {
       pluginId,

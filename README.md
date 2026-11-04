@@ -67,6 +67,16 @@ changes it for everyone and takes the VoidGram NFT off.
 - **Developer settings** (all off by default): player debug overlay, FPS counter, slow
   animations, stock player, lyrics diagnostics, plugin console, verbose log.
 
+## Theme engine (development source)
+
+**Settings → VoidGram → Themes, colours & badges → VoidGram themes** installs and switches
+`.vgtheme` themes: JSON with variables, `mix()`/`alpha()`/`lighten()`/`darken()`/`contrast()`,
+light and dark variants, about 60 readable names and direct access to Telegram's ~440 theme keys,
+applied live under the Customization colours. Themes import from chats, Files or the clipboard;
+plugins use `ayu.ui.theme.*` (`themes` permission). Five themes are built in (`themes/`); check
+your own with `python tools/vgtheme.py validate`. See [the format (RU)](docs/THEME_ENGINE_RU.md).
+Not yet built or device-tested.
+
 ## Chat appearance (development source)
 
 Open **Settings → VoidGram → Chat Appearance**. Per-account controls show/hide the header ghost button, display timestamp seconds, and customize deleted/edited labels. Empty labels use the current app language. Save labels applies text; switches apply immediately. Reset affects appearance only. Deleted-text capture remains a separate opt-in under Message History. These changes are part of the build 8 preview;

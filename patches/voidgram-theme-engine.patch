@@ -1,0 +1,1743 @@
+diff --git a/submodules/AccountContext/Sources/AyuPluginHostAPI.swift b/submodules/AccountContext/Sources/AyuPluginHostAPI.swift
+index a38dbceb35..bc7595ff54 100644
+--- a/submodules/AccountContext/Sources/AyuPluginHostAPI.swift
++++ b/submodules/AccountContext/Sources/AyuPluginHostAPI.swift
+@@ -252,7 +252,7 @@ public final class AyuPluginUI {
+ /// an API whose permission is missing fails with a console error.
+ public enum AyuPluginPermission: String, CaseIterable {
+     case ui, menu, profile, overlay, fonts, badges, clipboard, device, haptics
+-    case network, messages, ai, secrets, composer, notifications, links, screens, commands
++    case network, messages, ai, secrets, composer, notifications, links, screens, commands, themes
+     case messagesRead = "messages.read"
+     case clipboardRead = "clipboard.read"
+ 
+@@ -278,6 +278,7 @@ public enum AyuPluginPermission: String, CaseIterable {
+         case .links: return russian ? "переписывание ссылок" : "link rewriting"
+         case .screens: return russian ? "свои страницы" : "custom pages"
+         case .commands: return russian ? "точечные команды (.calc)" : "dot commands (.calc)"
++        case .themes: return russian ? "установка и смена тем VoidGram" : "installing and switching VoidGram themes"
+         }
+     }
+ 
+@@ -711,6 +712,35 @@ enum AyuPluginHostAPI {
+             guard allowed(.badges), let peer = peerId() else { return nil }
+             AyuPluginAvatarDecorations.set(op == "ui.avatar.clear" ? nil : string("emoji", 16), peerId: peer, owner: pluginId)
+             return ["ok": true]
++        case "ui.theme.list":
++            guard allowed(.themes) else { return nil }
++            let activeId = AyuThemeEngine.activeId
++            return AyuThemeEngine.installed.map { theme -> [String: Any] in
++                return ["id": theme.id, "name": theme.name(russian: false), "names": theme.names, "author": theme.author, "builtin": theme.isBuiltin, "active": theme.id == activeId]
++            }
++        case "ui.theme.active":
++            guard allowed(.themes) else { return nil }
++            return ["id": AyuThemeEngine.active?.id ?? NSNull()]
++        case "ui.theme.apply":
++            guard allowed(.themes) else { return nil }
++            let id = string("id", 64)
++            if !id.isEmpty && AyuThemeEngine.theme(id: id) == nil {
++                return ["ok": false, "error": "no installed theme '\(id)'"]
++            }
++            DispatchQueue.main.async {
++                AyuThemeEngine.activate(id.isEmpty ? nil : id)
++            }
++            return ["ok": true]
++        case "ui.theme.install":
++            guard allowed(.themes) else { return nil }
++            // The same check as a file import; a plugin cannot replace a built-in theme.
++            do {
++                let theme = try AyuThemeEngine.install(Data(string("json", 256 * 1024).utf8))
++                log(.info, "Installed theme '\(theme.id)'.")
++                return ["ok": true, "id": theme.id]
++            } catch {
++                return ["ok": false, "error": "\(error)"]
++            }
+         case "ui.chatBackground.set", "ui.chatBackground.reset":
+             guard allowed(.overlay) else { return nil }
+             let colors = op == "ui.chatBackground.reset" ? [] : ((args["colors"] as? [String]) ?? []).prefix(2).compactMap { AyuCustomization.parse($0).map { UIColor(rgb: $0) } }
+diff --git a/submodules/AccountContext/Sources/AyuScriptRuntime.swift b/submodules/AccountContext/Sources/AyuScriptRuntime.swift
+index 0b4f1b3269..4abca8bb94 100644
+--- a/submodules/AccountContext/Sources/AyuScriptRuntime.swift
++++ b/submodules/AccountContext/Sources/AyuScriptRuntime.swift
+@@ -1072,6 +1072,13 @@ private final class AyuScriptInstance: AyuPluginInstance, AyuReplInstance {
+                     set: (options) => host.call('ui.chatBackground.set', options || {}),
+                     reset: () => host.call('ui.chatBackground.reset', {})
+                 }),
++                theme: Object.freeze({
++                    list: () => host.call('ui.theme.list', {}) || [],
++                    active: () => { const answer = host.call('ui.theme.active', {}); return answer ? answer.id : null; },
++                    apply: (id) => host.call('ui.theme.apply', { id: id == null ? '' : text(id) }),
++                    reset: () => host.call('ui.theme.apply', { id: '' }),
++                    install: (theme) => host.call('ui.theme.install', { json: typeof theme === 'string' ? theme : JSON.stringify(theme) })
++                }),
+                 floatingButton: Object.freeze({
+                     add: (options, fn) => {
+                         const answer = host.call('ui.floatingButton.add', options || {});
+diff --git a/submodules/Display/Source/AyuThemeEngine.swift b/submodules/Display/Source/AyuThemeEngine.swift
+new file mode 100644
+index 0000000000..a5d871442b
+--- /dev/null
++++ b/submodules/Display/Source/AyuThemeEngine.swift
+@@ -0,0 +1,691 @@
++import Foundation
++import UIKit
++
++/// VoidGram theme engine: `.vgtheme` files (JSON) with variables, colour functions, light/dark
++/// variants, semantic names and every Telegram theme key. This file reads, checks and resolves
++/// them and keeps the installed ones; TelegramPresentationData's AyuThemeEngineApply lays the
++/// result over the current Telegram theme, under Settings → VoidGram → Customization colours.
++/// The rules match tools/vgtheme.py line by line (format: docs/THEME_ENGINE_RU.md).
++public enum AyuThemeEngine {
++    public static let didChangeNotification = Notification.Name("VoidGram.ThemeEngineChanged")
++    public static let fileExtension = "vgtheme"
++    public static let formatVersion = 1
++    static let maxFileBytes = 256 * 1024
++    static let maxVars = 256
++    static let maxNative = 1000
++    static let maxExpression = 200
++    static let maxDepth = 16
++    public static let bases = ["inherit", "day", "classic", "night", "tinted"]
++
++    /// Semantic names -> native Telegram keys, applied in this order (general before specific).
++    /// Same table as ALIASES in tools/vgtheme.py; ci/tests/test_vgtheme.py compares them.
++    public static let aliases: [(String, [String])] = [
++        ("background", ["list.blocksBg", "list.modalBlocksBg", "list.plainBg", "list.modalPlainBg", "chatList.bg", "chatList.itemBg"]),
++        ("surface", ["list.itemBlocksBg", "list.itemModalBlocksBg", "actionSheet.opaqueItemBg", "contextMenu.background"]),
++        ("separator", ["list.blocksSeparator", "list.plainSeparator", "chatList.itemSeparator", "root.navBar.separator", "root.tabBar.separator", "chat.inputPanel.panelSeparator", "actionSheet.opaqueItemSeparator", "contextMenu.itemSeparator"]),
++        ("text", ["list.primaryText", "chatList.title", "root.navBar.primaryText", "actionSheet.primaryText", "contextMenu.primary", "notification.primaryText"]),
++        ("secondaryText", ["list.secondaryText", "list.sectionHeaderText", "list.freeText", "list.disclosureArrow", "chatList.messageText", "chatList.dateText", "root.navBar.secondaryText", "actionSheet.secondaryText", "contextMenu.secondary"]),
++        ("destructive", ["list.destructive", "actionSheet.destructiveActionText", "contextMenu.destructive", "chat.inputPanel.panelControlDestructive"]),
++        ("highlight", ["list.itemHighlightedBg", "chatList.itemHighlightedBg", "actionSheet.opaqueItemHighlightedBg", "contextMenu.itemHighlightedBg"]),
++        ("switch.on", ["list.switch.content"]),
++        ("switch.off", ["list.switch.frame"]),
++        ("navBar.background", ["root.navBar.background", "root.navBar.opaqueBackground"]),
++        ("navBar.text", ["root.navBar.primaryText"]),
++        ("navBar.button", ["root.navBar.button", "root.navBar.accentText", "root.navBar.control"]),
++        ("tabBar.background", ["root.tabBar.background"]),
++        ("tabBar.icon", ["root.tabBar.icon", "root.tabBar.text"]),
++        ("tabBar.selected", ["root.tabBar.selectedIcon", "root.tabBar.selectedText"]),
++        ("badge.background", ["root.tabBar.badgeBackground", "root.navBar.badgeFill", "chatList.unreadBadgeActiveBg", "chat.historyNav.badgeBg"]),
++        ("badge.text", ["root.tabBar.badgeText", "root.navBar.badgeText", "chatList.unreadBadgeActiveText", "chat.historyNav.badgeText"]),
++        ("search.background", ["root.searchBar.inputFill", "chatList.regularSearchBar", "chatList.pinnedSearchBar"]),
++        ("search.text", ["root.searchBar.inputText"]),
++        ("search.placeholder", ["root.searchBar.inputPlaceholderText", "root.searchBar.inputIcon"]),
++        ("chatList.background", ["chatList.bg", "chatList.itemBg"]),
++        ("chatList.pinned", ["chatList.pinnedItemBg"]),
++        ("chatList.title", ["chatList.title"]),
++        ("chatList.message", ["chatList.messageText"]),
++        ("chatList.author", ["chatList.authorName"]),
++        ("chatList.date", ["chatList.dateText"]),
++        ("chatList.unread", ["chatList.unreadBadgeActiveBg"]),
++        ("chatList.unreadText", ["chatList.unreadBadgeActiveText"]),
++        ("chatList.muted", ["chatList.unreadBadgeInactiveBg", "chatList.muteIcon"]),
++        ("chatList.mutedText", ["chatList.unreadBadgeInactiveText"]),
++        ("chatList.checkmark", ["chatList.checkmark"]),
++        ("chatList.online", ["chatList.onlineDot"]),
++        ("outgoing.bubble", ["chat.message.outgoing.bubble.withWp.bg", "chat.message.outgoing.bubble.withWp.gradientBg", "chat.message.outgoing.bubble.withoutWp.bg", "chat.message.outgoing.bubble.withoutWp.gradientBg"]),
++        ("outgoing.bubbleGradient", ["chat.message.outgoing.bubble.withWp.gradientBg", "chat.message.outgoing.bubble.withoutWp.gradientBg"]),
++        ("outgoing.bubbleHighlighted", ["chat.message.outgoing.bubble.withWp.highlightedBg", "chat.message.outgoing.bubble.withoutWp.highlightedBg"]),
++        ("outgoing.bubbleStroke", ["chat.message.outgoing.bubble.withWp.stroke", "chat.message.outgoing.bubble.withoutWp.stroke"]),
++        ("outgoing.text", ["chat.message.outgoing.primaryText", "chat.message.outgoing.fileTitle"]),
++        ("outgoing.secondaryText", ["chat.message.outgoing.secondaryText", "chat.message.outgoing.fileDescription", "chat.message.outgoing.fileDuration"]),
++        ("outgoing.link", ["chat.message.outgoing.linkText"]),
++        ("outgoing.accent", ["chat.message.outgoing.accentText", "chat.message.outgoing.accentControl", "chat.message.outgoing.mediaActiveControl"]),
++        ("outgoing.check", ["chat.message.outgoingCheck"]),
++        ("incoming.bubble", ["chat.message.incoming.bubble.withWp.bg", "chat.message.incoming.bubble.withWp.gradientBg", "chat.message.incoming.bubble.withoutWp.bg", "chat.message.incoming.bubble.withoutWp.gradientBg"]),
++        ("incoming.bubbleGradient", ["chat.message.incoming.bubble.withWp.gradientBg", "chat.message.incoming.bubble.withoutWp.gradientBg"]),
++        ("incoming.bubbleHighlighted", ["chat.message.incoming.bubble.withWp.highlightedBg", "chat.message.incoming.bubble.withoutWp.highlightedBg"]),
++        ("incoming.bubbleStroke", ["chat.message.incoming.bubble.withWp.stroke", "chat.message.incoming.bubble.withoutWp.stroke"]),
++        ("incoming.text", ["chat.message.incoming.primaryText", "chat.message.incoming.fileTitle"]),
++        ("incoming.secondaryText", ["chat.message.incoming.secondaryText", "chat.message.incoming.fileDescription", "chat.message.incoming.fileDuration"]),
++        ("incoming.link", ["chat.message.incoming.linkText"]),
++        ("incoming.accent", ["chat.message.incoming.accentText", "chat.message.incoming.accentControl", "chat.message.incoming.mediaActiveControl"]),
++        ("service.background", ["chat.serviceMessage.components.withDefaultWp.bg", "chat.serviceMessage.components.withDefaultWp.dateFillStatic", "chat.serviceMessage.components.withDefaultWp.dateFillFloat", "chat.serviceMessage.components.withCustomWp.bg", "chat.serviceMessage.components.withCustomWp.dateFillStatic", "chat.serviceMessage.components.withCustomWp.dateFillFloat"]),
++        ("service.text", ["chat.serviceMessage.components.withDefaultWp.primaryText", "chat.serviceMessage.components.withCustomWp.primaryText", "chat.serviceMessage.dateText.withWp", "chat.serviceMessage.dateText.withoutWp"]),
++        ("input.background", ["chat.inputPanel.panelBg", "chat.inputButtonPanel.panelBg", "chat.inputMediaPanel.stickersBg"]),
++        ("input.field", ["chat.inputPanel.inputBg"]),
++        ("input.fieldStroke", ["chat.inputPanel.inputStroke"]),
++        ("input.text", ["chat.inputPanel.inputText_v2", "chat.inputPanel.primaryText"]),
++        ("input.placeholder", ["chat.inputPanel.inputPlaceholder_v2", "chat.inputPanel.secondaryText"]),
++        ("input.icons", ["chat.inputPanel.panelControl_v2", "chat.inputPanel.inputControl_v2"]),
++        ("input.accent", ["chat.inputPanel.panelControlAccent", "chat.inputPanel.actionControlBg", "chat.inputPanel.mediaRecordControl.button"]),
++        ("input.sendIcon", ["chat.inputPanel.actionControlFg", "chat.inputPanel.mediaRecordControl.activeIcon"]),
++        ("menu.background", ["contextMenu.background", "actionSheet.opaqueItemBg"]),
++        ("menu.text", ["contextMenu.primary", "actionSheet.primaryText"])
++    ]
++    private static let aliasNames = Set(AyuThemeEngine.aliases.map { $0.0 })
++
++    /// A name left out of the file takes this expression of another one, when that one is set.
++    static let derived: [(String, String, String)] = [
++        ("outgoing.bubbleHighlighted", "outgoing.bubble", "darken({}, 0.08)"),
++        ("incoming.bubbleHighlighted", "incoming.bubble", "darken({}, 0.08)")
++    ]
++
++    public struct ThemeError: Error, CustomStringConvertible {
++        public let description: String
++        init(_ description: String) {
++            self.description = description
++        }
++    }
++
++    public struct Theme {
++        public let id: String
++        public let names: [String: String]
++        public let author: String
++        public let summary: String
++        public let base: String
++        public let document: [String: Any]
++        /// The file as installed (or the built-in text), for sharing.
++        public let data: Data
++        public let isBuiltin: Bool
++
++        public func name(russian: Bool) -> String {
++            return self.names[russian ? "ru" : "en"] ?? self.names["en"] ?? self.names.values.sorted().first ?? self.id
++        }
++    }
++
++    public struct Resolved {
++        public let base: String
++        public let accent: UInt32?
++        /// Native key -> ARGB.
++        public let native: [String: UInt32]
++        /// ARGB, 0 to 4 colours.
++        public let wallpaper: [UInt32]
++        public let rotation: Int32
++        public let warnings: [String]
++    }
++
++    // MARK: Reading a file
++
++    private static func isBoolean(_ value: Any?) -> Bool {
++        guard let number = value as? NSNumber else { return false }
++        return CFGetTypeID(number) == CFBooleanGetTypeID()
++    }
++
++    private static func object(_ source: [String: Any], _ name: String, _ location: String) throws -> [String: Any] {
++        guard let value = source[name] else { return [:] }
++        guard let dictionary = value as? [String: Any] else {
++            throw ThemeError("\(location)\(name) must be an object")
++        }
++        return dictionary
++    }
++
++    private static func matches(_ text: String, _ pattern: String) -> Bool {
++        return text.range(of: pattern, options: .regularExpression) != nil
++    }
++
++    /// Reads and checks a theme without resolving it; `resolve` reports colour errors.
++    public static func parse(_ data: Data, builtin: Bool = false) throws -> Theme {
++        guard data.count <= AyuThemeEngine.maxFileBytes else {
++            throw ThemeError("larger than \(AyuThemeEngine.maxFileBytes / 1024) KB")
++        }
++        var bytes = data
++        if bytes.starts(with: [0xEF, 0xBB, 0xBF]) {
++            bytes = bytes.dropFirst(3)
++        }
++        guard let json = try? JSONSerialization.jsonObject(with: bytes, options: []) else {
++            throw ThemeError("not valid JSON")
++        }
++        guard let document = json as? [String: Any] else {
++            throw ThemeError("a theme is a JSON object")
++        }
++        guard let version = document["vgtheme"] as? NSNumber, !isBoolean(version), version.doubleValue == Double(AyuThemeEngine.formatVersion) else {
++            throw ThemeError("\"vgtheme\" must be \(AyuThemeEngine.formatVersion)")
++        }
++        guard let id = document["id"] as? String, matches(id, "^[a-z0-9][a-z0-9._-]{0,63}$") else {
++            throw ThemeError("\"id\" must be 1–64 of a-z 0-9 . _ - starting with a letter or digit")
++        }
++        var names: [String: String] = [:]
++        if let name = document["name"] as? String, !name.trimmingCharacters(in: .whitespaces).isEmpty {
++            names["en"] = name
++        } else if let localized = document["name"] as? [String: Any], !localized.isEmpty {
++            for (language, value) in localized {
++                guard let value = value as? String, !value.trimmingCharacters(in: .whitespaces).isEmpty else {
++                    throw ThemeError("\"name\" must be a string or {\"en\": …, \"ru\": …}")
++                }
++                names[language] = value
++            }
++        } else {
++            throw ThemeError("\"name\" must be a string or {\"en\": …, \"ru\": …}")
++        }
++        let base = document["base"] ?? "inherit"
++        guard let baseName = base as? String, AyuThemeEngine.bases.contains(baseName) else {
++            throw ThemeError("\"base\" must be one of " + AyuThemeEngine.bases.joined(separator: ", "))
++        }
++        for field in ["author", "description"] {
++            if let value = document[field], !(value is String) {
++                throw ThemeError("\"\(field)\" must be a string")
++            }
++        }
++        let variants = try object(document, "variants", "")
++        for variant in variants.keys where variant != "light" && variant != "dark" {
++            throw ThemeError("variants may only be \"light\" and \"dark\", not \"\(variant)\"")
++        }
++        var blocks: [(String, [String: Any])] = [("", document)]
++        for (name, value) in variants {
++            guard let block = value as? [String: Any] else {
++                throw ThemeError("variants.\(name) must be an object")
++            }
++            blocks.append(("variants.\(name).", block))
++        }
++        for (location, block) in blocks {
++            let variables = try object(block, "vars", location)
++            guard variables.count <= AyuThemeEngine.maxVars else {
++                throw ThemeError("\(location)vars: at most \(AyuThemeEngine.maxVars)")
++            }
++            for name in variables.keys where !matches(name, "^[A-Za-z_][A-Za-z0-9_-]{0,47}$") {
++                throw ThemeError("\(location)vars: '\(name)' is not a valid name")
++            }
++            for name in try object(block, "colors", location).keys where !aliasNames.contains(name) {
++                throw ThemeError("\(location)colors: unknown name '\(name)'")
++            }
++            guard try object(block, "native", location).count <= AyuThemeEngine.maxNative else {
++                throw ThemeError("\(location)native: at most \(AyuThemeEngine.maxNative) keys")
++            }
++        }
++        return Theme(id: id, names: names, author: document["author"] as? String ?? "", summary: document["description"] as? String ?? "", base: baseName, document: document, data: data, isBuiltin: builtin)
++    }
++
++    // MARK: Colours
++
++    static func parseHex(_ text: String) -> UInt32? {
++        if text == "transparent" {
++            return 0
++        }
++        guard text.hasPrefix("#") else { return nil }
++        var digits = String(text.dropFirst())
++        guard [3, 4, 6, 8].contains(digits.count), digits.allSatisfy({ $0.isHexDigit && $0.isASCII }) else {
++            return nil
++        }
++        if digits.count <= 4 {
++            digits = digits.map { "\($0)\($0)" }.joined()
++        }
++        let rgb = String(digits.prefix(6))
++        let alpha = digits.count == 8 ? String(digits.suffix(2)) : "ff"
++        guard let rgbValue = UInt32(rgb, radix: 16), let alphaValue = UInt32(alpha, radix: 16) else {
++            return nil
++        }
++        return (alphaValue << 24) | rgbValue
++    }
++
++    private static func lerp(_ x: UInt32, _ y: UInt32, _ t: Double) -> UInt32 {
++        let value = floor(Double(x) + (Double(y) - Double(x)) * t + 0.5)
++        return UInt32(max(0.0, min(255.0, value)))
++    }
++
++    static func mix(_ first: UInt32, _ second: UInt32, _ t: Double) -> UInt32 {
++        var result: UInt32 = 0
++        for shift: UInt32 in [24, 16, 8, 0] {
++            result |= lerp((first >> shift) & 0xFF, (second >> shift) & 0xFF, t) << shift
++        }
++        return result
++    }
++
++    static func contrast(_ color: UInt32) -> UInt32 {
++        let r = (color >> 16) & 0xFF, g = (color >> 8) & 0xFF, b = color & 0xFF
++        return (299 * r + 587 * g + 114 * b) / 1000 > 150 ? 0xFF000000 : 0xFFFFFFFF
++    }
++
++    public static func hexString(_ argb: UInt32) -> String {
++        let alpha = (argb >> 24) & 0xFF
++        let rgb = String(format: "#%06X", argb & 0xFFFFFF)
++        return alpha == 255 ? rgb : rgb + String(format: "%02X", alpha)
++    }
++
++    // MARK: Expressions
++
++    private final class Context {
++        let variables: [String: Any]
++        let base: (String) -> UInt32?
++        let knownKey: (String) -> Bool
++        var resolving: [String] = []
++        var cache: [String: UInt32] = [:]
++        var warnings: [String] = []
++
++        init(variables: [String: Any], base: @escaping (String) -> UInt32?, knownKey: @escaping (String) -> Bool) {
++            self.variables = variables
++            self.base = base
++            self.knownKey = knownKey
++        }
++    }
++
++    /// expr := #hex | transparent | $var | @native.key | name(arg, ...); arg := expr | number[%]
++    private struct Parser {
++        static let functions: Set<String> = ["mix", "alpha", "lighten", "darken", "contrast"]
++
++        let text: String
++        let characters: [Character]
++        var index = 0
++        let context: Context
++        var depth: Int
++
++        init(_ text: String, context: Context, depth: Int) {
++            self.text = text
++            self.characters = Array(text)
++            self.context = context
++            self.depth = depth
++        }
++
++        func fail(_ message: String) -> ThemeError {
++            return ThemeError("\(message) in '\(self.text)'")
++        }
++
++        mutating func skip() {
++            while self.index < self.characters.count && self.characters[self.index] == " " {
++                self.index += 1
++            }
++        }
++
++        static func isWordCharacter(_ c: Character) -> Bool {
++            return c.isASCII && (c.isLetter || c.isNumber || c == "_" || c == "." || c == "%" || c == "-")
++        }
++
++        mutating func token() throws -> String {
++            self.skip()
++            let start = self.index
++            if self.index < self.characters.count && "#$@".contains(self.characters[self.index]) {
++                self.index += 1
++            }
++            let wordStart = self.index
++            while self.index < self.characters.count && Parser.isWordCharacter(self.characters[self.index]) {
++                self.index += 1
++            }
++            guard self.index > wordStart else {
++                self.index = start
++                throw self.fail("expected a value")
++            }
++            return String(self.characters[start ..< self.index])
++        }
++
++        mutating func number() throws -> Double {
++            let word = try self.token()
++            guard AyuThemeEngine.matches(word, "^[0-9]*\\.?[0-9]+%?$") else {
++                throw self.fail("'\(word)' is not a number")
++            }
++            let value = word.hasSuffix("%") ? Double(word.dropLast())! / 100.0 : Double(word)!
++            guard value >= 0.0 && value <= 1.0 else {
++                throw self.fail("\(word) is outside 0…1")
++            }
++            return value
++        }
++
++        mutating func expect(_ char: Character) throws {
++            self.skip()
++            guard self.index < self.characters.count && self.characters[self.index] == char else {
++                throw self.fail("expected '\(char)'")
++            }
++            self.index += 1
++        }
++
++        mutating func nested() throws -> UInt32 {
++            self.depth += 1
++            defer { self.depth -= 1 }
++            return try self.color()
++        }
++
++        mutating func color() throws -> UInt32 {
++            guard self.depth <= AyuThemeEngine.maxDepth else {
++                throw self.fail("too deeply nested")
++            }
++            let word = try self.token()
++            if word.hasPrefix("$") {
++                return try AyuThemeEngine.resolveVariable(String(word.dropFirst()), self.context, self.depth + 1)
++            }
++            if word.hasPrefix("@") {
++                let path = String(word.dropFirst())
++                guard self.context.knownKey(path) else {
++                    throw self.fail("unknown native key '\(path)'")
++                }
++                if let value = self.context.base(path) {
++                    return value
++                }
++                self.context.warnings.append("@\(path) has no base value here; grey used")
++                return 0xFF808080
++            }
++            if word.hasPrefix("#") || word == "transparent" {
++                guard let value = AyuThemeEngine.parseHex(word) else {
++                    throw self.fail("'\(word)' is not a colour")
++                }
++                return value
++            }
++            guard Parser.functions.contains(word) else {
++                throw self.fail("unknown function '\(word)'")
++            }
++            try self.expect("(")
++            let result: UInt32
++            switch word {
++            case "contrast":
++                result = AyuThemeEngine.contrast(try self.nested())
++            case "mix":
++                let first = try self.nested()
++                try self.expect(",")
++                let second = try self.nested()
++                try self.expect(",")
++                result = AyuThemeEngine.mix(first, second, try self.number())
++            default:
++                let base = try self.nested()
++                try self.expect(",")
++                let amount = try self.number()
++                if word == "alpha" {
++                    result = (base & 0x00FFFFFF) | (AyuThemeEngine.lerp(0, 255, amount) << 24)
++                } else {
++                    let target: UInt32 = word == "lighten" ? 0xFFFFFF : 0x000000
++                    result = AyuThemeEngine.mix(base, (base & 0xFF000000) | target, amount)
++                }
++            }
++            try self.expect(")")
++            return result
++        }
++
++        mutating func parse() throws -> UInt32 {
++            let value = try self.color()
++            self.skip()
++            guard self.index == self.characters.count else {
++                throw self.fail("unexpected text at the end")
++            }
++            return value
++        }
++    }
++
++    private static func evaluate(_ value: Any, _ context: Context, _ depth: Int = 0) throws -> UInt32 {
++        guard let raw = value as? String else {
++            throw ThemeError("colour must be a string")
++        }
++        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
++        guard !text.isEmpty && text.count <= AyuThemeEngine.maxExpression else {
++            throw ThemeError("colour expression must be 1…\(AyuThemeEngine.maxExpression) characters")
++        }
++        var parser = Parser(text, context: context, depth: depth)
++        return try parser.parse()
++    }
++
++    private static func resolveVariable(_ name: String, _ context: Context, _ depth: Int) throws -> UInt32 {
++        if let cached = context.cache[name] {
++            return cached
++        }
++        guard let expression = context.variables[name] else {
++            throw ThemeError("unknown variable $\(name)")
++        }
++        guard !context.resolving.contains(name) else {
++            throw ThemeError("variable cycle: " + (context.resolving + [name]).map { "$" + $0 }.joined(separator: " -> "))
++        }
++        context.resolving.append(name)
++        defer { context.resolving.removeLast() }
++        let value = try evaluate(expression, context, depth)
++        context.cache[name] = value
++        return value
++    }
++
++    /// The document with variants.light or variants.dark laid over it.
++    private static func mergedBlock(_ document: [String: Any], dark: Bool) throws -> [String: Any] {
++        let variant = try object(document, "variants", "")[dark ? "dark" : "light"] as? [String: Any] ?? [:]
++        var result: [String: Any] = [:]
++        for name in ["vars", "colors", "native"] {
++            result[name] = try object(document, name, "").merging(try object(variant, name, ""), uniquingKeysWith: { _, new in new })
++        }
++        for name in ["accent", "wallpaper"] {
++            if let value = variant[name] ?? document[name] {
++                result[name] = value
++            }
++        }
++        return result
++    }
++
++    /// Colours for the light or dark look. `base` answers `@key` with the theme underneath;
++    /// `knownKey` tells native keys the app knows from typos.
++    public static func resolve(_ theme: Theme, dark: Bool, base: @escaping (String) -> UInt32? = { _ in nil }, knownKey: @escaping (String) -> Bool = { _ in true }) throws -> Resolved {
++        let block = try mergedBlock(theme.document, dark: dark)
++        let variables = block["vars"] as? [String: Any] ?? [:]
++        let context = Context(variables: variables, base: base, knownKey: knownKey)
++        func value(_ expression: Any, _ location: String) throws -> UInt32 {
++            do {
++                return try evaluate(expression, context)
++            } catch let error as ThemeError {
++                throw ThemeError("\(location): \(error.description)")
++            }
++        }
++        let accent = try block["accent"].map { try value($0, "accent") }
++        var colors = block["colors"] as? [String: Any] ?? [:]
++        for (target, source, template) in AyuThemeEngine.derived where colors[target] == nil {
++            if let expression = colors[source] as? String {
++                colors[target] = template.replacingOccurrences(of: "{}", with: expression)
++            }
++        }
++        var native: [String: UInt32] = [:]
++        for (name, targets) in AyuThemeEngine.aliases {
++            guard let expression = colors[name] else { continue }
++            let resolved = try value(expression, "colors.\(name)")
++            for target in targets {
++                native[target] = resolved
++            }
++        }
++        for (path, expression) in block["native"] as? [String: Any] ?? [:] {
++            guard knownKey(path) else {
++                context.warnings.append("native.\(path) is not a Telegram theme key; ignored")
++                continue
++            }
++            native[path] = try value(expression, "native.\(path)")
++        }
++        var wallpaper: [UInt32] = []
++        var rotation: Int32 = 0
++        if let spec = block["wallpaper"] {
++            var colorList: [Any]?
++            var rotationValue: Any?
++            if let single = spec as? String {
++                colorList = [single]
++            } else if let list = spec as? [Any] {
++                colorList = list
++            } else if let dictionary = spec as? [String: Any] {
++                colorList = dictionary["colors"] as? [Any]
++                rotationValue = dictionary["rotation"]
++            }
++            guard let colorList, (1 ... 4).contains(colorList.count) else {
++                throw ThemeError("wallpaper must be a colour, a list of 1–4 colours or {colors, rotation}")
++            }
++            for (index, color) in colorList.enumerated() {
++                wallpaper.append(try value(color, "wallpaper[\(index)]") | 0xFF000000)
++            }
++            if let rotationValue {
++                guard let number = rotationValue as? NSNumber, !isBoolean(number), number.doubleValue == Double(number.intValue), (0 ..< 360).contains(number.intValue) else {
++                    throw ThemeError("wallpaper.rotation must be a whole number 0…359")
++                }
++                rotation = Int32(number.intValue)
++            }
++        }
++        for name in variables.keys.sorted() {
++            do {
++                _ = try resolveVariable(name, context, 0)
++            } catch let error as ThemeError {
++                throw ThemeError("vars.\(name): \(error.description)")
++            }
++        }
++        var seen = Set<String>()
++        let warnings = context.warnings.filter { seen.insert($0).inserted }
++        return Resolved(base: theme.base, accent: accent, native: native, wallpaper: wallpaper, rotation: rotation, warnings: warnings)
++    }
++
++    /// Parses and resolves both looks; what an import shows before installing. `knownKey` flags
++    /// native keys the current Telegram theme does not have.
++    public static func check(_ data: Data, knownKey: @escaping (String) -> Bool = { _ in true }) throws -> (Theme, [String]) {
++        let theme = try parse(data)
++        let light = try resolve(theme, dark: false, knownKey: knownKey)
++        let dark = try resolve(theme, dark: true, knownKey: knownKey)
++        var seen = Set<String>()
++        return (theme, (light.warnings + dark.warnings).filter { seen.insert($0).inserted })
++    }
++
++    // MARK: Installed themes
++
++    private static let activeKey = "ayu.theme.active"
++    private static let lock = NSLock()
++    private static var cachedActive: (id: String, theme: Theme?)?
++
++    /// Bumped on every change so presentation themes are rebuilt.
++    public private(set) static var revision: Int = 0
++
++    public static var directory: URL {
++        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first ?? URL(fileURLWithPath: NSTemporaryDirectory())
++        return support.appendingPathComponent("VoidGram/Themes", isDirectory: true)
++    }
++
++    private static func fileURL(id: String) -> URL {
++        return AyuThemeEngine.directory.appendingPathComponent(id + "." + AyuThemeEngine.fileExtension)
++    }
++
++    public static let builtins: [Theme] = AyuThemeEngineBuiltins.all.compactMap { try? AyuThemeEngine.parse(Data($0.utf8), builtin: true) }
++
++    /// Built-in themes first, then the user's by name.
++    public static var installed: [Theme] {
++        let files = (try? FileManager.default.contentsOfDirectory(at: AyuThemeEngine.directory, includingPropertiesForKeys: nil)) ?? []
++        let user = files.filter { $0.pathExtension == AyuThemeEngine.fileExtension }.compactMap { url -> Theme? in
++            return (try? Data(contentsOf: url)).flatMap { try? AyuThemeEngine.parse($0) }
++        }.sorted { $0.name(russian: false).localizedCaseInsensitiveCompare($1.name(russian: false)) == .orderedAscending }
++        let builtinIds = Set(AyuThemeEngine.builtins.map { $0.id })
++        return AyuThemeEngine.builtins + user.filter { !builtinIds.contains($0.id) }
++    }
++
++    public static func theme(id: String) -> Theme? {
++        if let builtin = AyuThemeEngine.builtins.first(where: { $0.id == id }) {
++            return builtin
++        }
++        return (try? Data(contentsOf: AyuThemeEngine.fileURL(id: id))).flatMap { try? AyuThemeEngine.parse($0) }
++    }
++
++    public static var activeId: String? {
++        let value = UserDefaults.standard.string(forKey: AyuThemeEngine.activeKey) ?? ""
++        return value.isEmpty ? nil : value
++    }
++
++    /// The theme in use, nil for Telegram's own; decoy mode hides it like every VoidGram look.
++    public static var active: Theme? {
++        guard !AyuDecoyMode.isActive, let id = AyuThemeEngine.activeId else {
++            return nil
++        }
++        AyuThemeEngine.lock.lock()
++        defer { AyuThemeEngine.lock.unlock() }
++        if let cached = AyuThemeEngine.cachedActive, cached.id == id {
++            return cached.theme
++        }
++        let theme = AyuThemeEngine.theme(id: id)
++        AyuThemeEngine.cachedActive = (id, theme)
++        return theme
++    }
++
++    public static var isActive: Bool {
++        return AyuThemeEngine.active != nil
++    }
++
++    public static func activate(_ id: String?) {
++        if let id {
++            UserDefaults.standard.set(id, forKey: AyuThemeEngine.activeKey)
++        } else {
++            UserDefaults.standard.removeObject(forKey: AyuThemeEngine.activeKey)
++        }
++        AyuThemeEngine.changed()
++    }
++
++    /// Checks and saves a theme file; one with the id of an installed theme replaces it.
++    @discardableResult
++    public static func install(_ data: Data) throws -> Theme {
++        let (theme, _) = try AyuThemeEngine.check(data)
++        if AyuThemeEngine.builtins.contains(where: { $0.id == theme.id }) {
++            throw ThemeError("\"\(theme.id)\" is the id of a built-in theme; give the copy another id")
++        }
++        try FileManager.default.createDirectory(at: AyuThemeEngine.directory, withIntermediateDirectories: true)
++        try data.write(to: AyuThemeEngine.fileURL(id: theme.id), options: .atomic)
++        AyuThemeEngine.changed()
++        return theme
++    }
++
++    public static func delete(id: String) {
++        try? FileManager.default.removeItem(at: AyuThemeEngine.fileURL(id: id))
++        if AyuThemeEngine.activeId == id {
++            UserDefaults.standard.removeObject(forKey: AyuThemeEngine.activeKey)
++        }
++        AyuThemeEngine.changed()
++    }
++
++    /// A file to share: the installed one, or a temporary copy of a built-in theme.
++    public static func shareURL(_ theme: Theme) -> URL? {
++        let url = FileManager.default.temporaryDirectory.appendingPathComponent(theme.id + "." + AyuThemeEngine.fileExtension)
++        do {
++            try theme.data.write(to: url, options: .atomic)
++            return url
++        } catch {
++            return nil
++        }
++    }
++
++    /// The active theme resolved for one look. Errors leave Telegram's look.
++    public static func resolvedActive(dark: Bool, base: @escaping (String) -> UInt32?, knownKey: @escaping (String) -> Bool) -> Resolved? {
++        guard let theme = AyuThemeEngine.active else {
++            return nil
++        }
++        return try? AyuThemeEngine.resolve(theme, dark: dark, base: base, knownKey: knownKey)
++    }
++
++    private static func changed() {
++        AyuThemeEngine.lock.lock()
++        AyuThemeEngine.cachedActive = nil
++        AyuThemeEngine.revision += 1
++        AyuThemeEngine.lock.unlock()
++        NotificationCenter.default.post(name: AyuThemeEngine.didChangeNotification, object: nil)
++    }
++
++    // MARK: Writing themes
++
++    /// A theme file from the Customization colours, so they can be shared or kept.
++    public static func documentFromCustomization(id: String, name: String) -> Data? {
++        let mapping: [(AyuCustomization.Color, String)] = [
++            (.outgoingBubble, "outgoing.bubble"), (.outgoingText, "outgoing.text"),
++            (.incomingBubble, "incoming.bubble"), (.incomingText, "incoming.text"),
++            (.listBackground, "background"), (.chatTitle, "chatList.title")
++        ]
++        var document: [String: Any] = ["vgtheme": AyuThemeEngine.formatVersion, "id": id, "name": name, "author": "VoidGram"]
++        var colors: [String: String] = [:]
++        for (color, alias) in mapping {
++            if let hex = AyuCustomization.hex(color) {
++                colors[alias] = hex
++            }
++        }
++        if !colors.isEmpty {
++            document["colors"] = colors
++        }
++        if let accent = AyuCustomization.hex(.accent) {
++            document["accent"] = accent
++        }
++        if let first = AyuCustomization.hex(.wallpaper) {
++            document["wallpaper"] = [first] + (AyuCustomization.hex(.wallpaperSecond).map { [$0] } ?? [])
++        }
++        return try? JSONSerialization.data(withJSONObject: document, options: [.prettyPrinted, .sortedKeys])
++    }
++}
+diff --git a/submodules/Display/Source/AyuThemeEngineBuiltins.swift b/submodules/Display/Source/AyuThemeEngineBuiltins.swift
+new file mode 100644
+index 0000000000..9a04edacac
+--- /dev/null
++++ b/submodules/Display/Source/AyuThemeEngineBuiltins.swift
+@@ -0,0 +1,238 @@
++import Foundation
++
++// Generated by `python tools/vgtheme.py builtins` from themes/*.vgtheme; do not edit by hand.
++enum AyuThemeEngineBuiltins {
++    static let all: [String] = [
++        #"""
++        {
++          "vgtheme": 1,
++          "id": "void-graphite",
++          "name": { "en": "Void Graphite", "ru": "Void Графит" },
++          "author": "VoidGram",
++          "description": "The VoidGram mark's graphite and violet: dark at night, soft grey by day.",
++          "accent": "$violet",
++          "vars": {
++            "violet": "#8E5CF7"
++          },
++          "variants": {
++            "dark": {
++              "vars": {
++                "bg": "#0B0B0F",
++                "surface": "#16161C",
++                "text": "#ECECF1",
++                "muted": "#8A8A96"
++              },
++              "colors": {
++                "background": "$bg",
++                "surface": "$surface",
++                "separator": "mix($surface, $text, 0.08)",
++                "text": "$text",
++                "secondaryText": "$muted",
++                "highlight": "mix($surface, $violet, 0.18)",
++                "navBar.background": "alpha($bg, 0.92)",
++                "tabBar.background": "alpha($bg, 0.92)",
++                "tabBar.icon": "$muted",
++                "tabBar.selected": "$violet",
++                "search.background": "$surface",
++                "chatList.pinned": "mix($bg, $violet, 0.06)",
++                "chatList.muted": "#3A3A44",
++                "outgoing.bubble": "#5B3FA8",
++                "outgoing.bubbleGradient": "#7B4FD6",
++                "outgoing.text": "#FFFFFF",
++                "outgoing.secondaryText": "alpha(#FFFFFF, 0.65)",
++                "outgoing.link": "#E3D6FF",
++                "outgoing.accent": "#E3D6FF",
++                "outgoing.check": "#E3D6FF",
++                "incoming.bubble": "#1E1E26",
++                "incoming.text": "$text",
++                "incoming.secondaryText": "$muted",
++                "incoming.link": "#B79CFF",
++                "incoming.accent": "#B79CFF",
++                "service.background": "alpha(#000000, 0.45)",
++                "input.background": "alpha($bg, 0.94)",
++                "input.field": "$surface",
++                "input.accent": "$violet",
++                "input.sendIcon": "#FFFFFF"
++              },
++              "wallpaper": { "colors": ["#0B0B0F", "#161226", "#0E0B1A", "#1A1430"], "rotation": 0 }
++            },
++            "light": {
++              "colors": {
++                "background": "#F2F2F6",
++                "outgoing.bubble": "#E6DCFA",
++                "outgoing.text": "#1E1240",
++                "outgoing.secondaryText": "alpha(#1E1240, 0.55)",
++                "outgoing.check": "$violet",
++                "incoming.bubble": "#FFFFFF",
++                "tabBar.selected": "$violet"
++              },
++              "wallpaper": ["#EEEAF8", "#F7F5FC"]
++            }
++          }
++        }
++        """#,
++        #"""
++        {
++          "vgtheme": 1,
++          "id": "nord",
++          "name": "Nord",
++          "author": "VoidGram",
++          "description": "Arctic, north-bluish palette after nordtheme.com.",
++          "base": "night",
++          "accent": "$frost",
++          "vars": {
++            "polar0": "#2E3440",
++            "polar1": "#3B4252",
++            "polar2": "#434C5E",
++            "polar3": "#4C566A",
++            "snow": "#ECEFF4",
++            "snow2": "#D8DEE9",
++            "frost": "#88C0D0",
++            "frost2": "#5E81AC",
++            "aurora": "#BF616A"
++          },
++          "colors": {
++            "background": "$polar0",
++            "surface": "$polar1",
++            "separator": "$polar2",
++            "text": "$snow",
++            "secondaryText": "mix($snow2, $polar3, 0.35)",
++            "destructive": "$aurora",
++            "highlight": "$polar2",
++            "switch.on": "$frost",
++            "navBar.background": "alpha($polar0, 0.94)",
++            "tabBar.background": "alpha($polar0, 0.94)",
++            "tabBar.selected": "$frost",
++            "badge.background": "$frost2",
++            "search.background": "$polar1",
++            "chatList.pinned": "mix($polar0, $polar1, 0.5)",
++            "chatList.muted": "$polar3",
++            "outgoing.bubble": "$frost2",
++            "outgoing.text": "$snow",
++            "outgoing.secondaryText": "alpha($snow, 0.7)",
++            "outgoing.link": "#E5F0F7",
++            "outgoing.accent": "#E5F0F7",
++            "outgoing.check": "#E5F0F7",
++            "incoming.bubble": "$polar1",
++            "incoming.text": "$snow",
++            "incoming.secondaryText": "$snow2",
++            "incoming.link": "$frost",
++            "incoming.accent": "$frost",
++            "input.background": "alpha($polar0, 0.95)",
++            "input.field": "$polar1",
++            "input.accent": "$frost",
++            "input.sendIcon": "$polar0"
++          },
++          "wallpaper": { "colors": ["#2E3440", "#3B4252"], "rotation": 45 }
++        }
++        """#,
++        #"""
++        {
++          "vgtheme": 1,
++          "id": "dracula",
++          "name": "Dracula",
++          "author": "VoidGram",
++          "description": "The dark theme from draculatheme.com.",
++          "base": "night",
++          "accent": "$purple",
++          "vars": {
++            "bg": "#282A36",
++            "current": "#44475A",
++            "fg": "#F8F8F2",
++            "comment": "#6272A4",
++            "purple": "#BD93F9",
++            "pink": "#FF79C6",
++            "green": "#50FA7B",
++            "red": "#FF5555"
++          },
++          "colors": {
++            "background": "$bg",
++            "surface": "mix($bg, $current, 0.5)",
++            "separator": "$current",
++            "text": "$fg",
++            "secondaryText": "$comment",
++            "destructive": "$red",
++            "switch.on": "$green",
++            "tabBar.selected": "$purple",
++            "badge.background": "$pink",
++            "badge.text": "$bg",
++            "chatList.title": "$fg",
++            "chatList.online": "$green",
++            "chatList.checkmark": "$green",
++            "outgoing.bubble": "$comment",
++            "outgoing.text": "$fg",
++            "outgoing.secondaryText": "alpha($fg, 0.65)",
++            "outgoing.link": "$pink",
++            "outgoing.accent": "$pink",
++            "outgoing.check": "$green",
++            "incoming.bubble": "$current",
++            "incoming.text": "$fg",
++            "incoming.secondaryText": "lighten($comment, 0.25)",
++            "incoming.link": "$purple",
++            "incoming.accent": "$pink",
++            "input.field": "$current",
++            "input.accent": "$purple",
++            "input.sendIcon": "$bg"
++          },
++          "wallpaper": "#282A36"
++        }
++        """#,
++        #"""
++        {
++          "vgtheme": 1,
++          "id": "oled-violet",
++          "name": { "en": "OLED Violet", "ru": "OLED фиолетовая" },
++          "author": "VoidGram",
++          "description": "True black for OLED screens with violet accents.",
++          "base": "night",
++          "accent": "#A47BFF",
++          "colors": {
++            "background": "#000000",
++            "surface": "#0E0E10",
++            "separator": "#1C1C20",
++            "navBar.background": "#000000",
++            "tabBar.background": "#000000",
++            "input.background": "#000000",
++            "input.field": "#121214",
++            "outgoing.bubble": "#2A1F48",
++            "outgoing.text": "#FFFFFF",
++            "incoming.bubble": "#141416",
++            "incoming.text": "#FFFFFF",
++            "service.background": "alpha(#1C1C20, 0.9)"
++          },
++          "native": {
++            "chat.message.outgoing.bubble.withWp.stroke": "transparent",
++            "chat.message.incoming.bubble.withWp.stroke": "transparent"
++          },
++          "wallpaper": "#000000"
++        }
++        """#,
++        #"""
++        {
++          "vgtheme": 1,
++          "id": "sakura",
++          "name": { "en": "Sakura", "ru": "Сакура" },
++          "author": "VoidGram",
++          "description": "A light pink theme; the chat list keeps Telegram's own colours.",
++          "base": "day",
++          "accent": "$pink",
++          "vars": {
++            "pink": "#FF6FA8",
++            "ink": "#3A0A1F"
++          },
++          "colors": {
++            "tabBar.selected": "$pink",
++            "outgoing.bubble": "#FFC1DA",
++            "outgoing.text": "$ink",
++            "outgoing.secondaryText": "alpha($ink, 0.55)",
++            "outgoing.link": "darken($pink, 0.3)",
++            "outgoing.accent": "darken($pink, 0.3)",
++            "outgoing.check": "darken($pink, 0.2)",
++            "incoming.bubble": "#FFFFFF",
++            "service.background": "alpha(darken($pink, 0.5), 0.35)"
++          },
++          "wallpaper": { "colors": ["#FFF0F6", "#FFD6E8", "#FFE8F1", "#FFC9DF"], "rotation": 0 }
++        }
++        """#
++    ]
++}
+diff --git a/submodules/SettingsUI/Sources/AyuCustomizationController.swift b/submodules/SettingsUI/Sources/AyuCustomizationController.swift
+index 30d931b124..62dc302b8b 100644
+--- a/submodules/SettingsUI/Sources/AyuCustomizationController.swift
++++ b/submodules/SettingsUI/Sources/AyuCustomizationController.swift
+@@ -142,8 +142,12 @@ func ayuCustomizationController(context: AccountContext) -> ViewController {
+ 
+     var badgeRows: [Int32: Int64] = [:]
+ 
++    var push: ((ViewController) -> Void)?
++
+     let arguments = AyuSectionedArguments(open: { id in
+         switch id {
++        case -2:
++            push?(ayuThemesController(context: context))
+         case 1 ... 14:
+             let index = Int(id - 1)
+             if AyuCustomization.presets.indices.contains(index) {
+@@ -183,11 +187,22 @@ func ayuCustomizationController(context: AccountContext) -> ViewController {
+         return AyuSettingsIcons.symbol(name, color: UIColor(rgb: color))
+     }
+ 
+-    let signal = combineLatest(ayuSettingsPresentationData(context: context), ayuCustomizationSignal())
++    let themeEngine = Signal<Void, NoError> { subscriber in
++        subscriber.putNext(Void())
++        let observer = NotificationCenter.default.addObserver(forName: AyuThemeEngine.didChangeNotification, object: nil, queue: .main, using: { _ in
++            subscriber.putNext(Void())
++        })
++        return ActionDisposable { NotificationCenter.default.removeObserver(observer) }
++    }
++    let signal = combineLatest(ayuSettingsPresentationData(context: context), ayuCustomizationSignal(), themeEngine)
+     |> deliverOnMainQueue
+-    |> map { presentationData, _ -> (ItemListControllerState, (ItemListNodeState, Any)) in
++    |> map { presentationData, _, _ -> (ItemListControllerState, (ItemListNodeState, Any)) in
+         let ru = presentationData.strings.baseLanguageCode.hasPrefix("ru")
+-        var entries: [AyuSectionedEntry] = [.header(1, 0, ru ? "ГОТОВЫЕ ПАЛИТРЫ" : "PALETTES")]
++        var entries: [AyuSectionedEntry] = []
++        // The theme engine first: a whole .vgtheme theme, under the palettes and colours below.
++        entries.append(.header(0, -3, ru ? "ДВИЖОК ТЕМ" : "THEME ENGINE"))
++        entries.append(.link(0, -2, AyuSettingsIcons.symbol("paintbrush.pointed.fill", color: UIColor(rgb: 0x8E5CF7), preserveColor: true), ru ? "Темы VoidGram" : "VoidGram themes", AyuThemeEngine.active?.name(russian: ru) ?? (ru ? "нет" : "none")))
++        entries.append(.header(1, 0, ru ? "ГОТОВЫЕ ПАЛИТРЫ" : "PALETTES"))
+         for (index, preset) in AyuCustomization.presets.enumerated() where index < 14 {
+             let tint = preset.colors[.accent].flatMap(AyuCustomization.parse) ?? 0x8E5CF7
+             entries.append(.link(1, Int32(1 + index), AyuSettingsIcons.symbol("circle.hexagongrid.fill", color: UIColor(rgb: tint), preserveColor: true), ru ? preset.nameRu : preset.nameEn, ""))
+@@ -200,7 +215,7 @@ func ayuCustomizationController(context: AccountContext) -> ViewController {
+             let value = AyuCustomization.rgb(row.0)
+             entries.append(.link(2, Int32(17 + index), AyuSettingsIcons.symbol(row.1, color: UIColor(rgb: value ?? 0x8E8E93), preserveColor: true), ru ? row.2 : row.3, AyuCustomization.hex(row.0) ?? (ru ? "как в теме" : "theme")))
+         }
+-        entries.append(.info(2, 26, ru ? "Цвета ложатся поверх любой темы и применяются после перезапуска приложения." : "Colours go on top of any theme and apply after the app is relaunched."))
++        entries.append(.info(2, 26, ru ? "Цвета ложатся поверх любой темы, в том числе темы VoidGram." : "Colours go on top of any theme, a VoidGram theme included."))
+         entries.append(.header(3, 30, ru ? "БЕЙДЖИ" : "BADGES"))
+         entries.append(.link(3, 31, symbol("crown.fill", 0xFFCC00), ru ? "Мой бейдж" : "My badge", AyuCustomization.myBadge.isEmpty ? (ru ? "нет" : "none") : AyuCustomization.myBadge))
+         entries.append(.link(3, 32, symbol("plus.circle.fill", 0x34C759), ru ? "Добавить бейдж чату" : "Add a chat badge", ""))
+@@ -219,6 +234,7 @@ func ayuCustomizationController(context: AccountContext) -> ViewController {
+         return (state, (ItemListNodeState(presentationData: data, entries: entries, style: .blocks, animateChanges: true), arguments))
+     }
+     let controller = ItemListController(context: context, state: signal)
++    push = { [weak controller] in controller?.push($0) }
+     presentNative = { viewController in
+         context.sharedContext.applicationBindings.presentNativeController(viewController)
+     }
+diff --git a/submodules/SettingsUI/Sources/AyuSettingsSearch.swift b/submodules/SettingsUI/Sources/AyuSettingsSearch.swift
+index d252594a44..b71f444a78 100644
+--- a/submodules/SettingsUI/Sources/AyuSettingsSearch.swift
++++ b/submodules/SettingsUI/Sources/AyuSettingsSearch.swift
+@@ -71,6 +71,7 @@ private func ayuSettingsSearchEntries(context: AccountContext, ru: Bool) -> [Ayu
+     page("appearancePlus", "Панели, стекло и эффекты", "Tabs, glass & effects", "вкладки tabs стекло glass") { ayuAppearancePlusController(context: context) }
+     page("whiteGram", "Шрифты и оформление WhiteGram", "WhiteGram fonts and appearance", "font пузырьки bubble экспорт import") { ayuWhiteGramController(context: context) }
+     page("custom", "Темы, цвета и бейджи", "Themes, colours & badges", "цвета colors палитра темы theme wallpaper обои") { ayuCustomizationController(context: context) }
++    page("themeEngine", "Темы VoidGram (.vgtheme)", "VoidGram themes (.vgtheme)", "движок тем theme engine vgtheme импорт import файл file") { ayuThemesController(context: context) }
+     page("icons", "Иконки и бейдж", "Icons & badge", "монохромные цветные monochrome coloured svg") { ayuIconsController(context: context) }
+     page("glass", "Стекло и пузыри", "Glass and bubbles") { ayuGlassController(context: context) }
+     page("lyricsMotion", "Анимация текста в плеере", "Player lyrics animation", "караоке karaoke волна wave свечение glow каскад cascade") { ayuPlayerTextSettingsController(context: context) }
+diff --git a/submodules/SettingsUI/Sources/AyuThemesController.swift b/submodules/SettingsUI/Sources/AyuThemesController.swift
+new file mode 100644
+index 0000000000..4fabbfd748
+--- /dev/null
++++ b/submodules/SettingsUI/Sources/AyuThemesController.swift
+@@ -0,0 +1,278 @@
++import Foundation
++import UIKit
++import UniformTypeIdentifiers
++import Display
++import SwiftSignalKit
++import TelegramCore
++import TelegramPresentationData
++import PresentationDataUtils
++import ItemListUI
++import AccountContext
++
++// Settings → VoidGram → Themes, colours & badges → VoidGram themes: .vgtheme files.
++// Pick, import (Files, clipboard, a file in a chat), share, delete, and make new ones from
++// the Customization colours or from every key of the current Telegram theme.
++
++private func ayuThemeEngineSignal() -> Signal<Void, NoError> {
++    return Signal { subscriber in
++        subscriber.putNext(Void())
++        let observer = NotificationCenter.default.addObserver(forName: AyuThemeEngine.didChangeNotification, object: nil, queue: .main, using: { _ in
++            subscriber.putNext(Void())
++        })
++        return ActionDisposable {
++            NotificationCenter.default.removeObserver(observer)
++        }
++    }
++}
++
++private final class AyuThemePicker: NSObject, UIDocumentPickerDelegate {
++    static var current: AyuThemePicker?
++    private let picked: (URL) -> Void
++
++    init(picked: @escaping (URL) -> Void) {
++        self.picked = picked
++    }
++
++    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
++        if let url = urls.first {
++            self.picked(url)
++        }
++        AyuThemePicker.current = nil
++    }
++
++    func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
++        AyuThemePicker.current = nil
++    }
++}
++
++private func ayuThemePresent(_ context: AccountContext, _ controller: UIViewController) {
++    if let popover = controller.popoverPresentationController, let view = context.sharedContext.mainWindow?.viewController?.view {
++        popover.sourceView = view
++        popover.sourceRect = CGRect(x: view.bounds.midX, y: view.bounds.midY, width: 1.0, height: 1.0)
++        popover.permittedArrowDirections = []
++    }
++    context.sharedContext.applicationBindings.presentNativeController(controller)
++}
++
++private func ayuThemeAlert(_ context: AccountContext, _ title: String, _ message: String) {
++    let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
++    alert.addAction(UIAlertAction(title: "OK", style: .default))
++    ayuThemePresent(context, alert)
++}
++
++private func ayuThemeShare(_ context: AccountContext, _ data: Data, filename: String) {
++    let url = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
++    guard (try? data.write(to: url, options: .atomic)) != nil else { return }
++    ayuThemePresent(context, UIActivityViewController(activityItems: [url], applicationActivities: nil))
++}
++
++/// Shows what a theme file is and installs it on confirmation; used by the Themes page and when a
++/// .vgtheme file is opened in a chat.
++public func ayuImportTheme(context: AccountContext, data: Data) {
++    let presentationData = context.sharedContext.currentPresentationData.with { $0 }
++    let russian = presentationData.strings.baseLanguageCode.hasPrefix("ru")
++    let checked: (AyuThemeEngine.Theme, [String])
++    do {
++        checked = try AyuThemeEngine.check(data, knownKey: ayuThemeEngineKeyChecker(presentationData.theme))
++    } catch {
++        ayuThemeAlert(context, russian ? "Тема не подходит" : "Theme not accepted", "\(error)")
++        return
++    }
++    let (theme, warnings) = checked
++    let replaces = AyuThemeEngine.installed.contains(where: { $0.id == theme.id && !$0.isBuiltin })
++    var lines: [String] = []
++    if !theme.author.isEmpty {
++        lines.append((russian ? "Автор: " : "Author: ") + theme.author)
++    }
++    if !theme.summary.isEmpty {
++        lines.append(theme.summary)
++    }
++    if replaces {
++        lines.append(russian ? "Заменит установленную тему с тем же id «\(theme.id)»." : "Replaces the installed theme with the id “\(theme.id)”.")
++    }
++    if !warnings.isEmpty {
++        lines.append((russian ? "Предупреждения:\n" : "Warnings:\n") + warnings.prefix(5).joined(separator: "\n"))
++    }
++    let alert = UIAlertController(title: theme.name(russian: russian), message: lines.joined(separator: "\n\n"), preferredStyle: .alert)
++    func install(apply: Bool) {
++        do {
++            let installed = try AyuThemeEngine.install(data)
++            if apply {
++                AyuThemeEngine.activate(installed.id)
++            }
++        } catch {
++            ayuThemeAlert(context, russian ? "Не удалось установить" : "Could not install", "\(error)")
++        }
++    }
++    alert.addAction(UIAlertAction(title: russian ? "Установить и применить" : "Install and apply", style: .default, handler: { _ in install(apply: true) }))
++    alert.addAction(UIAlertAction(title: russian ? "Только установить" : "Install only", style: .default, handler: { _ in install(apply: false) }))
++    alert.addAction(UIAlertAction(title: russian ? "Отмена" : "Cancel", style: .cancel))
++    ayuThemePresent(context, alert)
++}
++
++public func ayuImportTheme(context: AccountContext, fileURL: URL) {
++    let access = fileURL.startAccessingSecurityScopedResource()
++    defer {
++        if access { fileURL.stopAccessingSecurityScopedResource() }
++    }
++    guard let data = try? Data(contentsOf: fileURL) else {
++        let russian = context.sharedContext.currentPresentationData.with { $0 }.strings.baseLanguageCode.hasPrefix("ru")
++        ayuThemeAlert(context, "VoidGram", russian ? "Не удалось прочитать файл." : "Could not read the file.")
++        return
++    }
++    ayuImportTheme(context: context, data: data)
++}
++
++/// The themes page. Row ids: 1 Telegram's look, 10… installed themes, 900… actions.
++func ayuThemesController(context: AccountContext) -> ViewController {
++    let russian = context.sharedContext.currentPresentationData.with { $0 }.strings.baseLanguageCode.hasPrefix("ru")
++    var themeRows: [Int32: AyuThemeEngine.Theme] = [:]
++
++    func themeActions(_ theme: AyuThemeEngine.Theme) {
++        var message: [String] = []
++        if !theme.author.isEmpty {
++            message.append((russian ? "Автор: " : "Author: ") + theme.author)
++        }
++        if !theme.summary.isEmpty {
++            message.append(theme.summary)
++        }
++        message.append("id: \(theme.id)")
++        let sheet = UIAlertController(title: theme.name(russian: russian), message: message.joined(separator: "\n"), preferredStyle: .actionSheet)
++        if AyuThemeEngine.activeId != theme.id {
++            sheet.addAction(UIAlertAction(title: russian ? "Применить" : "Apply", style: .default, handler: { _ in AyuThemeEngine.activate(theme.id) }))
++        }
++        sheet.addAction(UIAlertAction(title: russian ? "Поделиться файлом" : "Share file", style: .default, handler: { _ in
++            ayuThemeShare(context, theme.data, filename: theme.id + "." + AyuThemeEngine.fileExtension)
++        }))
++        sheet.addAction(UIAlertAction(title: russian ? "Скопировать JSON" : "Copy JSON", style: .default, handler: { _ in
++            UIPasteboard.general.string = String(data: theme.data, encoding: .utf8)
++        }))
++        if !theme.isBuiltin {
++            sheet.addAction(UIAlertAction(title: russian ? "Удалить" : "Delete", style: .destructive, handler: { _ in AyuThemeEngine.delete(id: theme.id) }))
++        }
++        sheet.addAction(UIAlertAction(title: russian ? "Отмена" : "Cancel", style: .cancel))
++        ayuThemePresent(context, sheet)
++    }
++
++    func importFromFiles() {
++        let types = [UTType(filenameExtension: AyuThemeEngine.fileExtension), UTType.json, UTType.plainText, UTType.item].compactMap { $0 }
++        let picker = UIDocumentPickerViewController(forOpeningContentTypes: types, asCopy: true)
++        let delegate = AyuThemePicker(picked: { url in
++            ayuImportTheme(context: context, fileURL: url)
++        })
++        AyuThemePicker.current = delegate
++        picker.delegate = delegate
++        context.sharedContext.applicationBindings.presentNativeController(picker)
++    }
++
++    func importFromClipboard() {
++        guard let text = UIPasteboard.general.string, !text.isEmpty else {
++            ayuThemeAlert(context, "VoidGram", russian ? "В буфере обмена нет текста темы." : "There is no theme text on the clipboard.")
++            return
++        }
++        ayuImportTheme(context: context, data: Data(text.utf8))
++    }
++
++    func askName(_ title: String, _ completion: @escaping (String, String) -> Void) {
++        let alert = UIAlertController(title: title, message: russian ? "Название и id (латиница, цифры, точка, дефис)." : "A name and an id (a-z, digits, dot, dash).", preferredStyle: .alert)
++        alert.addTextField { field in
++            field.placeholder = russian ? "Моя тема" : "My theme"
++        }
++        alert.addTextField { field in
++            field.placeholder = "my-theme"
++            field.autocapitalizationType = .none
++            field.autocorrectionType = .no
++        }
++        alert.addAction(UIAlertAction(title: russian ? "Готово" : "Done", style: .default, handler: { [weak alert] _ in
++            let fields = alert?.textFields ?? []
++            let name = (fields.first?.text ?? "").trimmingCharacters(in: .whitespaces)
++            var id = (fields.last?.text ?? "").lowercased().trimmingCharacters(in: .whitespaces)
++            if id.isEmpty {
++                id = "custom-\(Int(Date().timeIntervalSince1970))"
++            }
++            completion(name.isEmpty ? (russian ? "Моя тема" : "My theme") : name, id)
++        }))
++        alert.addAction(UIAlertAction(title: russian ? "Отмена" : "Cancel", style: .cancel))
++        ayuThemePresent(context, alert)
++    }
++
++    func createFromCustomization() {
++        guard AyuCustomization.hasColors else {
++            ayuThemeAlert(context, "VoidGram", russian ? "Сначала задайте свои цвета на странице «Темы, цвета и бейджи»." : "Set your own colours on the Themes, colours & badges page first.")
++            return
++        }
++        askName(russian ? "Тема из своих цветов" : "Theme from your colours") { name, id in
++            guard let data = AyuThemeEngine.documentFromCustomization(id: id, name: name) else { return }
++            ayuImportTheme(context: context, data: data)
++        }
++    }
++
++    func exportNativeKeys() {
++        let presentationData = context.sharedContext.currentPresentationData.with { $0 }
++        let id = "telegram-keys"
++        guard let data = ayuThemeEngineNativeDocument(presentationData.theme, id: id, name: russian ? "Ключи текущей темы" : "Current theme keys") else { return }
++        ayuThemeShare(context, data, filename: id + "." + AyuThemeEngine.fileExtension)
++    }
++
++    let arguments = AyuSectionedArguments(open: { id in
++        switch id {
++        case 1:
++            AyuThemeEngine.activate(nil)
++        case 901:
++            importFromFiles()
++        case 902:
++            importFromClipboard()
++        case 903:
++            createFromCustomization()
++        case 904:
++            exportNativeKeys()
++        default:
++            if let theme = themeRows[id] {
++                if AyuThemeEngine.activeId == theme.id {
++                    themeActions(theme)
++                } else {
++                    AyuThemeEngine.activate(theme.id)
++                }
++            }
++        }
++    }, toggle: { _, _ in }, context: context)
++
++    func symbol(_ name: String, _ color: UInt32) -> UIImage? {
++        return AyuSettingsIcons.symbol(name, color: UIColor(rgb: color), preserveColor: true)
++    }
++
++    let signal = combineLatest(ayuSettingsPresentationData(context: context), ayuThemeEngineSignal())
++    |> deliverOnMainQueue
++    |> map { presentationData, _ -> (ItemListControllerState, (ItemListNodeState, Any)) in
++        let ru = presentationData.strings.baseLanguageCode.hasPrefix("ru")
++        let activeId = AyuThemeEngine.active?.id
++        var entries: [AyuSectionedEntry] = []
++        entries.append(.chat(0, 0, AyuSectionedChatPreview(presentationData: presentationData, messages: [
++            ChatPreviewMessageItem(outgoing: false, reply: nil, text: ru ? "Как тебе новая тема?" : "How do you like the new theme?", nameColor: .preset(.blue), backgroundEmojiId: nil),
++            ChatPreviewMessageItem(outgoing: true, reply: nil, text: ru ? "Собрал её сам в .vgtheme 🎨" : "Made it myself as a .vgtheme 🎨", nameColor: .preset(.blue), backgroundEmojiId: nil)
++        ])))
++        entries.append(.header(1, 2, ru ? "ТЕМЫ VOIDGRAM" : "VOIDGRAM THEMES"))
++        entries.append(.link(1, 3, symbol(activeId == nil ? "checkmark.circle.fill" : "circle", activeId == nil ? 0x34C759 : 0x8E8E93), ru ? "Telegram (без темы)" : "Telegram (no theme)", ""))
++        themeRows = [:]
++        var nextId: Int32 = 10
++        for theme in AyuThemeEngine.installed where nextId < 890 {
++            let isActive = theme.id == activeId
++            let tint = (try? AyuThemeEngine.resolve(theme, dark: presentationData.theme.overallDarkAppearance))?.accent.map { $0 & 0xFFFFFF } ?? 0x8E5CF7
++            let label = isActive ? (ru ? "включена · ещё" : "on · more") : (theme.isBuiltin ? (ru ? "встроенная" : "built-in") : theme.author)
++            entries.append(.link(1, nextId, symbol(isActive ? "checkmark.circle.fill" : "paintpalette.fill", isActive ? 0x34C759 : tint), theme.name(russian: ru), label))
++            themeRows[nextId] = theme
++            nextId += 1
++        }
++        entries.append(.info(1, 891, ru ? "Нажмите на тему, чтобы применить; на включённую — чтобы поделиться или удалить. Ваши цвета со страницы «Темы, цвета и бейджи» ложатся поверх темы." : "Tap a theme to apply it; tap the one that is on to share or delete it. Your colours from Themes, colours & badges go on top of the theme."))
++        entries.append(.header(2, 900, ru ? "ДОБАВИТЬ" : "ADD"))
++        entries.append(.link(2, 901, symbol("folder.fill", 0x007AFF), ru ? "Импорт из Файлов" : "Import from Files", ".vgtheme"))
++        entries.append(.link(2, 902, symbol("doc.on.clipboard.fill", 0x5856D6), ru ? "Вставить из буфера" : "Paste from clipboard", "JSON"))
++        entries.append(.link(2, 903, symbol("wand.and.stars", 0xAF52DE), ru ? "Тема из своих цветов" : "Theme from your colours", ""))
++        entries.append(.link(2, 904, symbol("curlybraces", 0xFF9500), ru ? "Ключи текущей темы" : "Current theme keys", ru ? "для авторов" : "for authors"))
++        entries.append(.info(2, 905, ru ? "Формат .vgtheme: JSON с переменными ($bg), функциями mix(), alpha(), lighten(), darken(), contrast(), вариантами для светлой и тёмной темы, понятными именами (outgoing.bubble, tabBar.selected…) и любыми из ~440 ключей Telegram. Описание — docs/THEME_ENGINE_RU.md в репозитории." : "The .vgtheme format: JSON with variables ($bg), mix(), alpha(), lighten(), darken(), contrast(), light and dark variants, readable names (outgoing.bubble, tabBar.selected…) and any of Telegram's ~440 keys. See docs/THEME_ENGINE_RU.md in the repository."))
++        let data = ItemListPresentationData(presentationData)
++        let state = ItemListControllerState(presentationData: data, title: .text(ru ? "Темы VoidGram" : "VoidGram themes"), leftNavigationButton: nil, rightNavigationButton: nil, backNavigationButton: ItemListBackButton(title: presentationData.strings.Common_Back))
++        return (state, (ItemListNodeState(presentationData: data, entries: entries, style: .blocks, animateChanges: true), arguments))
++    }
++    return ItemListController(context: context, state: signal)
++}
+diff --git a/submodules/TelegramPresentationData/Sources/AyuCustomizedTheme.swift b/submodules/TelegramPresentationData/Sources/AyuCustomizedTheme.swift
+index 78f17acc72..cf592b7430 100644
+--- a/submodules/TelegramPresentationData/Sources/AyuCustomizedTheme.swift
++++ b/submodules/TelegramPresentationData/Sources/AyuCustomizedTheme.swift
+@@ -75,18 +75,20 @@ private func ayuApplyCustomization(_ theme: PresentationTheme) -> PresentationTh
+     return result
+ }
+ 
+-/// The theme with the user's colours, cached per input theme and settings revision.
++/// The theme with the active .vgtheme and then the user's colours, cached per input theme and
++/// settings revision.
+ func ayuCustomizedTheme(_ theme: PresentationTheme) -> PresentationTheme {
+-    guard AyuCustomization.hasColors || AyuGlass.lists else {
++    let themeEngine = AyuThemeEngine.isActive
++    guard themeEngine || AyuCustomization.hasColors || AyuGlass.lists else {
+         return theme
+     }
+-    let revision = AyuCustomization.revision * 2 + (AyuGlass.lists ? 1 : 0)
++    let revision = (AyuCustomization.revision * 2 + (AyuGlass.lists ? 1 : 0)) &* 100_003 &+ (themeEngine ? AyuThemeEngine.revision + 1 : 0)
+     ayuCustomLock.lock()
+     defer { ayuCustomLock.unlock() }
+     if let cached = ayuCustomThemes.first(where: { ($0.input === theme || $0.output === theme) && $0.revision == revision }) {
+         return cached.output
+     }
+-    let output = ayuApplyCustomization(theme)
++    let output = ayuApplyCustomization(themeEngine ? ayuApplyThemeEngine(theme) : theme)
+     ayuCustomThemes.append((theme, revision, output))
+     if ayuCustomThemes.count > 6 {
+         ayuCustomThemes.removeFirst(ayuCustomThemes.count - 6)
+diff --git a/submodules/TelegramPresentationData/Sources/AyuThemeEngineApply.swift b/submodules/TelegramPresentationData/Sources/AyuThemeEngineApply.swift
+new file mode 100644
+index 0000000000..266eb334cf
+--- /dev/null
++++ b/submodules/TelegramPresentationData/Sources/AyuThemeEngineApply.swift
+@@ -0,0 +1,280 @@
++import Foundation
++import UIKit
++import Display
++import TelegramCore
++import TelegramUIPreferences
++
++// VoidGram theme engine, second half: lays a resolved .vgtheme over a PresentationTheme.
++// The theme goes through Telegram's own theme text (the .tgios-theme format that
++// encodePresentationTheme writes and makePresentationTheme reads), so a theme can set any of
++// Telegram's keys without a hand-written mapping per colour.
++
++/// Telegram's theme text as a tree: "key: value" lines, two spaces per level.
++final class AyuThemeTree {
++    final class Node {
++        var value: String?
++        var children: [(key: String, node: Node)] = []
++
++        init(value: String? = nil) {
++            self.value = value
++        }
++
++        func child(_ key: String) -> Node? {
++            return self.children.first(where: { $0.key == key })?.node
++        }
++    }
++
++    let root = Node()
++
++    /// Reads the text the way makePresentationTheme does.
++    init?(text: String) {
++        var stack: [Node] = [self.root]
++        for line in text.split(whereSeparator: { $0.isNewline }) {
++            let trimmed = line.trimmingCharacters(in: .whitespaces)
++            if trimmed.hasPrefix("#") || trimmed.hasPrefix("//") {
++                continue
++            }
++            guard let colon = line.firstIndex(of: ":") else { continue }
++            let key = line[line.startIndex ..< colon]
++            let spaces = key.prefix(while: { $0 == " " }).count
++            guard spaces % 2 == 0, spaces / 2 < stack.count else {
++                return nil
++            }
++            stack.removeLast(stack.count - spaces / 2 - 1)
++            let value = line[line.index(after: colon)...].trimmingCharacters(in: .whitespacesAndNewlines)
++            let node = Node(value: value.isEmpty ? nil : value)
++            stack[stack.count - 1].children.append((key.trimmingCharacters(in: .whitespaces), node))
++            if value.isEmpty {
++                stack.append(node)
++            }
++        }
++    }
++
++    private func node(_ components: [String]) -> Node? {
++        var current = self.root
++        for component in components {
++            guard let next = current.child(component) else { return nil }
++            current = next
++        }
++        return current
++    }
++
++    func value(_ path: String) -> String? {
++        return self.node(path.components(separatedBy: "."))?.value
++    }
++
++    func contains(_ path: String) -> Bool {
++        return self.node(path.components(separatedBy: ".")) != nil
++    }
++
++    /// Sets a leaf. Its parent must exist; a missing leaf is added, since some colours are optional
++    /// and fall back to another key when absent.
++    @discardableResult
++    func set(_ path: String, _ value: String) -> Bool {
++        var components = path.components(separatedBy: ".")
++        let leaf = components.removeLast()
++        guard let parent = self.node(components), parent.value == nil else {
++            return false
++        }
++        if let existing = parent.child(leaf) {
++            guard existing.children.isEmpty else { return false }
++            existing.value = value
++        } else {
++            parent.children.append((leaf, Node(value: value)))
++        }
++        // A bubble with three or more colours stores them in `bgList`, which the decoder prefers
++        // over `bg`; a single new fill replaces the list.
++        if leaf == "bg" || leaf == "gradientBg", parent.child("bgList") != nil {
++            parent.children.removeAll(where: { $0.key == "bgList" })
++            if parent.child("gradientBg") == nil {
++                parent.children.append(("gradientBg", Node(value: value)))
++            }
++            if parent.child("bg") == nil {
++                parent.children.append(("bg", Node(value: value)))
++            }
++        }
++        return true
++    }
++
++    var text: String {
++        var result = ""
++        func render(_ node: Node, level: Int) {
++            for (key, child) in node.children {
++                result.append(String(repeating: "  ", count: level))
++                if let value = child.value {
++                    result.append("\(key): \(value)\n")
++                } else {
++                    result.append("\(key):\n")
++                    render(child, level: level + 1)
++                }
++            }
++        }
++        render(self.root, level: 0)
++        return result
++    }
++
++    /// A colour in Telegram's notation: rrggbb, aarrggbb or clear.
++    static func colorValue(_ argb: UInt32) -> String {
++        if argb == 0 {
++            return "clear"
++        }
++        return (argb >> 24) == 0xFF ? String(format: "%06x", argb & 0xFFFFFF) : String(format: "%08x", argb)
++    }
++
++    /// ARGB of a colour leaf, for `@key` in theme files.
++    func color(_ path: String) -> UInt32? {
++        guard let value = self.value(path) else { return nil }
++        if value.lowercased() == "clear" {
++            return 0
++        }
++        guard let number = UInt32(value, radix: 16) else { return nil }
++        return value.count > 6 ? number : (0xFF000000 | number)
++    }
++}
++
++private func ayuThemeBase(_ base: String, current: PresentationTheme) -> PresentationTheme {
++    let reference: PresentationBuiltinThemeReference
++    switch base {
++    case "day":
++        reference = .day
++    case "classic":
++        reference = .dayClassic
++    case "night":
++        reference = .night
++    case "tinted":
++        reference = .nightAccent
++    default:
++        return current
++    }
++    if current.referenceTheme == reference {
++        return current
++    }
++    return makeDefaultPresentationTheme(reference: reference, serviceBackgroundColor: defaultServiceBackgroundColor, preview: current.preview)
++}
++
++private func ayuThemeTree(_ theme: PresentationTheme) -> AyuThemeTree? {
++    return encodePresentationTheme(theme).flatMap { AyuThemeTree(text: $0) }
++}
++
++/// The resolved active theme for the look of `theme` (light or dark), and the theme it goes on.
++private func ayuResolvedThemeEngine(_ theme: PresentationTheme) -> (resolved: AyuThemeEngine.Resolved, base: PresentationTheme)? {
++    guard let active = AyuThemeEngine.active else {
++        return nil
++    }
++    let base = ayuThemeBase(active.base, current: theme)
++    guard let tree = ayuThemeTree(base) else {
++        return nil
++    }
++    guard let resolved = AyuThemeEngine.resolvedActive(dark: base.overallDarkAppearance, base: { tree.color($0) }, knownKey: { tree.contains($0) || ayuThemeOptionalParent(tree, $0) }) else {
++        return nil
++    }
++    return (resolved, base)
++}
++
++/// An optional colour whose section exists (list.modalBlocksBg and the like).
++private func ayuThemeOptionalParent(_ tree: AyuThemeTree, _ path: String) -> Bool {
++    var components = path.components(separatedBy: ".")
++    guard components.count > 1 else { return false }
++    components.removeLast()
++    return tree.contains(components.joined(separator: ".")) && tree.value(components.joined(separator: ".")) == nil
++}
++
++/// The active .vgtheme over `theme`: base theme, accent, then every colour it sets.
++/// Telegram's look stays when no theme is active or the theme cannot be read.
++func ayuApplyThemeEngine(_ theme: PresentationTheme) -> PresentationTheme {
++    guard let engine = ayuResolvedThemeEngine(theme) else {
++        return theme
++    }
++    let resolved = engine.resolved
++    var result = engine.base
++    if let accent = resolved.accent {
++        result = customizePresentationTheme(result, editing: false, accentColor: UIColor(argb: accent), outgoingAccentColor: nil, backgroundColors: [], bubbleColors: [], animateBubbleColors: nil)
++    }
++    if resolved.native.isEmpty {
++        return result
++    }
++    guard let tree = ayuThemeTree(result) else {
++        return result
++    }
++    for (path, color) in resolved.native {
++        tree.set(path, AyuThemeTree.colorValue(color))
++    }
++    guard let decoded = makePresentationTheme(data: Data(tree.text.utf8)) else {
++        return result
++    }
++    // Keep the identity of the theme underneath: its name, index and reference drive caches and
++    // the theme picker's checkmark.
++    return PresentationTheme(name: result.name, index: result.index, referenceTheme: result.referenceTheme, overallDarkAppearance: result.overallDarkAppearance, intro: decoded.intro, passcode: decoded.passcode, rootController: decoded.rootController, list: decoded.list, chatList: decoded.chatList, chat: decoded.chat.withUpdated(defaultWallpaper: result.chat.defaultWallpaper), actionSheet: decoded.actionSheet, contextMenu: decoded.contextMenu, inAppNotification: decoded.inAppNotification, chart: decoded.chart, preview: result.preview)
++}
++
++/// The active theme's chat background for the look of `theme`: a colour or a 2–4 colour gradient.
++/// Cached per input theme and engine revision, since every PresentationData asks.
++func ayuThemeEngineWallpaper(_ theme: PresentationTheme) -> TelegramWallpaper? {
++    guard AyuThemeEngine.isActive else {
++        return nil
++    }
++    let revision = AyuThemeEngine.revision
++    ayuThemeWallpaperLock.lock()
++    defer { ayuThemeWallpaperLock.unlock() }
++    if let cached = ayuThemeWallpaperCache, cached.input === theme, cached.revision == revision {
++        return cached.wallpaper
++    }
++    var wallpaper: TelegramWallpaper?
++    if let resolved = ayuResolvedThemeEngine(theme)?.resolved, let first = resolved.wallpaper.first {
++        if resolved.wallpaper.count == 1 {
++            wallpaper = .color(first)
++        } else {
++            wallpaper = .gradient(TelegramWallpaper.Gradient(id: nil, colors: resolved.wallpaper, settings: WallpaperSettings(rotation: resolved.rotation)))
++        }
++    }
++    ayuThemeWallpaperCache = (theme, revision, wallpaper)
++    return wallpaper
++}
++
++private let ayuThemeWallpaperLock = NSLock()
++private var ayuThemeWallpaperCache: (input: PresentationTheme, revision: Int, wallpaper: TelegramWallpaper?)?
++
++/// Whether a native key exists in `theme` (or is an optional colour of an existing section), for
++/// the warnings of an import review.
++public func ayuThemeEngineKeyChecker(_ theme: PresentationTheme) -> (String) -> Bool {
++    guard let tree = ayuThemeTree(theme) else {
++        return { _ in true }
++    }
++    return { tree.contains($0) || ayuThemeOptionalParent(tree, $0) }
++}
++
++/// Every native key of `theme` with its colour, as a .vgtheme `native` block: a starting point
++/// for theme authors ("Export Telegram keys").
++public func ayuThemeEngineNativeDocument(_ theme: PresentationTheme, id: String, name: String) -> Data? {
++    guard let tree = ayuThemeTree(theme) else {
++        return nil
++    }
++    var native: [String: String] = [:]
++    func walk(_ node: AyuThemeTree.Node, _ prefix: String) {
++        for (key, child) in node.children {
++            let path = prefix.isEmpty ? key : prefix + "." + key
++            if child.value != nil, let color = tree.color(path) {
++                native[path] = AyuThemeEngine.hexString(color)
++            } else if child.value == nil {
++                walk(child, path)
++            }
++        }
++    }
++    walk(tree.root, "")
++    for meta in ["name", "basedOn", "dark", "chat.defaultWallpaper"] {
++        native[meta] = nil
++    }
++    let base: String
++    switch theme.referenceTheme {
++    case .day:
++        base = "day"
++    case .dayClassic:
++        base = "classic"
++    case .night:
++        base = "night"
++    case .nightAccent:
++        base = "tinted"
++    }
++    let document: [String: Any] = ["vgtheme": AyuThemeEngine.formatVersion, "id": id, "name": name, "author": "VoidGram", "base": base, "native": native]
++    return try? JSONSerialization.data(withJSONObject: document, options: [.prettyPrinted, .sortedKeys])
++}
+diff --git a/submodules/TelegramPresentationData/Sources/PresentationData.swift b/submodules/TelegramPresentationData/Sources/PresentationData.swift
+index 64928c5c8d..661466be77 100644
+--- a/submodules/TelegramPresentationData/Sources/PresentationData.swift
++++ b/submodules/TelegramPresentationData/Sources/PresentationData.swift
+@@ -126,7 +126,7 @@ public final class PresentationData: Equatable {
+         // AyuGram: OLED mode first, then the user's own colours on top.
+         self.theme = ayuCustomizedTheme(ayuOledModeEnabled ? ayuOledTheme(from: theme) : theme)
+         self.autoNightModeTriggered = autoNightModeTriggered
+-        self.chatWallpaper = ayuCustomWallpaper() ?? (ayuOledModeEnabled ? .color(0x000000) : chatWallpaper)
++        self.chatWallpaper = ayuCustomWallpaper() ?? ayuThemeEngineWallpaper(theme) ?? (ayuOledModeEnabled ? .color(0x000000) : chatWallpaper)
+         // AyuGram plugin API `ayu.ui.font.set`: message and list text sizes.
+         self.chatFontSize = ayuPluginFontSize("messages") ?? chatFontSize
+         self.chatBubbleCorners = chatBubbleCorners
+@@ -758,8 +758,15 @@ private func ayuCustomizationUpdates() -> Signal<Void, NoError> {
+         let observer = NotificationCenter.default.addObserver(forName: AyuCustomization.didChangeNotification, object: nil, queue: .main, using: { _ in
+             subscriber.putNext(Void())
+         })
++        // The theme engine too: installing or switching a .vgtheme repaints at once.
++        let themeObserver = NotificationCenter.default.addObserver(forName: AyuThemeEngine.didChangeNotification, object: nil, queue: .main, using: { _ in
++            subscriber.putNext(Void())
++        })
+         subscriber.putNext(Void())
+-        return ActionDisposable { NotificationCenter.default.removeObserver(observer) }
++        return ActionDisposable {
++            NotificationCenter.default.removeObserver(observer)
++            NotificationCenter.default.removeObserver(themeObserver)
++        }
+     }
+ }
+ 
+diff --git a/submodules/TelegramUI/Sources/OpenChatMessage.swift b/submodules/TelegramUI/Sources/OpenChatMessage.swift
+index d18b3e7ec8..ddc9d00df8 100644
+--- a/submodules/TelegramUI/Sources/OpenChatMessage.swift
++++ b/submodules/TelegramUI/Sources/OpenChatMessage.swift
+@@ -233,6 +233,21 @@ func openChatMessageImpl(_ params: OpenChatMessageParams) -> Bool {
+             case let .document(file, immediateShare):
+                 params.dismissInput()
+                 let presentationData = params.context.sharedContext.currentPresentationData.with { $0 }
++                // VoidGram theme engine: a .vgtheme file opens its import review.
++                if !immediateShare, let name = file.fileName, name.lowercased().hasSuffix("." + AyuThemeEngine.fileExtension), !params.message.isCopyProtected(), !params.copyProtected, params.message.id.peerId.namespace != Namespaces.Peer.SecretChat {
++                    let _ = (params.context.engine.resources.data(resource: EngineMediaResource(file.resource))
++                    |> filter { $0.isComplete }
++                    |> take(1)
++                    |> timeout(3.0, queue: Queue.mainQueue(), alternate: .single(EngineMediaResource.ResourceData(path: "", availableSize: 0, isComplete: false)))
++                    |> deliverOnMainQueue).startStandalone(next: { data in
++                        guard data.isComplete else {
++                            params.present(textAlertController(context: params.context, title: "VoidGram", text: presentationData.strings.baseLanguageCode.hasPrefix("ru") ? "Сначала дождись загрузки файла, затем нажми на него ещё раз." : "Wait for the file to download, then tap it again.", actions: [TextAlertAction(type: .defaultAction, title: presentationData.strings.Common_OK, action: {})]), nil, .window(.root))
++                            return
++                        }
++                        ayuImportTheme(context: params.context, fileURL: URL(fileURLWithPath: data.path))
++                    })
++                    return true
++                }
+                 if !immediateShare, let name = file.fileName, [".plugin", ".iosplug", ".ayujs", ".ayu.js", ".ayupy", ".ayu.py", ".ayulua", ".ayu.lua", ".ayuwasm", ".ayu.wasm"].contains(where: { name.lowercased().hasSuffix($0) }), !params.message.isCopyProtected(), !params.copyProtected, params.message.id.peerId.namespace != Namespaces.Peer.SecretChat {
+                     let _ = (params.context.engine.resources.data(resource: EngineMediaResource(file.resource))
+                     |> filter { $0.isComplete }

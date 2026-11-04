@@ -1,0 +1,25 @@
+{
+  "vgtheme": 1,
+  "id": "sakura",
+  "name": { "en": "Sakura", "ru": "Сакура" },
+  "author": "VoidGram",
+  "description": "A light pink theme; the chat list keeps Telegram's own colours.",
+  "base": "day",
+  "accent": "$pink",
+  "vars": {
+    "pink": "#FF6FA8",
+    "ink": "#3A0A1F"
+  },
+  "colors": {
+    "tabBar.selected": "$pink",
+    "outgoing.bubble": "#FFC1DA",
+    "outgoing.text": "$ink",
+    "outgoing.secondaryText": "alpha($ink, 0.55)",
+    "outgoing.link": "darken($pink, 0.3)",
+    "outgoing.accent": "darken($pink, 0.3)",
+    "outgoing.check": "darken($pink, 0.2)",
+    "incoming.bubble": "#FFFFFF",
+    "service.background": "alpha(darken($pink, 0.5), 0.35)"
+  },
+  "wallpaper": { "colors": ["#FFF0F6", "#FFD6E8", "#FFE8F1", "#FFC9DF"], "rotation": 0 }
+}
